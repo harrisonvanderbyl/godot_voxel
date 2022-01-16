@@ -12,11 +12,18 @@ VoxelStream::Result VoxelStreamScript::emerge_block(VoxelBufferInternal &out_buf
 	if (try_call_script(this, VoxelStringNames::get_singleton()->_emerge_block,
 				buffer_wrapper, origin_in_voxels.to_vec3(), lod, &output)) {
 		int res = output;
+		if(res == RESULT_BLOCK_NOT_FOUND){
 		ERR_FAIL_INDEX_V(res, _RESULT_COUNT, RESULT_ERROR);
+		};
+		if(res == RESULT_BLOCK_FOUND){
+		buffer_wrapper->get_buffer().move_to(out_buffer)
+		}
+
 		return static_cast<Result>(res);
+
 	}
 	// The wrapper is discarded
-	buffer_wrapper->get_buffer().move_to(out_buffer);
+	
 	return RESULT_ERROR;
 }
 
