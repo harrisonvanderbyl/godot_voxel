@@ -16,7 +16,7 @@ VoxelStream::Result VoxelStreamScript::emerge_block(VoxelBufferInternal &out_buf
 		ERR_FAIL_INDEX_V(res, _RESULT_COUNT, RESULT_ERROR);
 		};
 		if(res == RESULT_BLOCK_FOUND){
-		buffer_wrapper->get_buffer().move_to(out_buffer)
+		buffer_wrapper->get_buffer().move_to(out_buffer);
 		}
 
 		return static_cast<Result>(res);

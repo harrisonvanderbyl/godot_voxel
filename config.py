@@ -47,7 +47,8 @@ def get_doc_classes():
     "VoxelGeneratorNoise",
     "VoxelGeneratorGraph",
     "VoxelGeneratorScript",
-
+    "VoxelGenHex",
+    "TreeGen",
     "VoxelBoxMover",
     "VoxelRaycastResult",
     "VoxelTool",
