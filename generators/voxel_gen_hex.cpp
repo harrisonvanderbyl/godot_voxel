@@ -123,11 +123,11 @@ Dictionary VoxelGenHex::genDeets( Vector2 location,Vector2 b,int plod,Parameters
 	deets["islandScale"] = round(xrandf_range(sed,0.1,1.5)*4.0)/4.0+0.1;
 	deets["islandDensity"] = xrandf_range(sed,0.5,0.99);
 	
-	deets["islandDrip"] = round(xrandf_range(sed,0.1,3))+0.1;
-	deets["connectiveness"] = xrandf_range(sed,0.1,0.8);
+	deets["islandDrip"] = (xrandf_range(sed,0.1,3));
+	deets["connectiveness"] = xrandf_range(sed,0.1,0.9);
 	deets["landheight"] = xrandf_range(sed,40,400);
-	deets["islandLift"] = float(deets["landheight"])+xrandf_range(sed,0,450);
-	deets["landScale"] = xrandf_range(sed,0.1,3);
+	deets["islandLift"] = xrandf_range(sed,32,450);
+	deets["landScale"] = xrandf_range(sed,0.5,2);
 	deets["watertable"] = 3;
 	deets["tip"] = genMountainHeight(b,params.scale >> int(deets["EZislandWidth"]),1.0,plod,deets,params);
 	
