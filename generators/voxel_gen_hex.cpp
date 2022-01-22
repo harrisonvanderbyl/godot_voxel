@@ -72,6 +72,7 @@ float VoxelGenHex::genMountainHeight(Vector2 location, int initialSize,float ss,
 	
 	float mtnheight = 0.0;
 	int size = initialSize;
+	Vector2 OldHex = hextest(int(location.x),int(location.y),(size));
 	for(int s = 0; s < 50; s++){
 		
 	Vector2 hex = hextest(int(location.x),int(location.y),(size));
@@ -85,12 +86,15 @@ float VoxelGenHex::genMountainHeight(Vector2 location, int initialSize,float ss,
 	//	modifier = max(0.0f,modifier);
 	//}
 	float height =  modifier * ss * ((cos((min(dist,float(size))/float(size))*3.1415)*0.5+0.5)*float(size));
-	
+	if(OldHex.distance_to(hex)>size << 1){
+		break;
+	}
 	mtnheight += height;
 
+	OldHex = hex;
 	
-	size = size >> 3;
-	if(size < 16)break;
+	size = size >> 1;
+	if(size < 8)break;
 	}
 	
 	
@@ -135,36 +139,36 @@ Dictionary VoxelGenHex::genDeets( Vector2 location,Vector2 b,int plod,Parameters
 	
 	return deets;}
 Dictionary VoxelGenHex::genDetails( Vector3 location,int plod,Parameters params){
-	int scale = 500;
-	Vector2 fix = Vector2(scale,0);
-    Vector2 fix2 = Vector2(scale/2,scale);
-    Vector2 fix3 = Vector2(scale/2+scale,scale);
+	int scale = params.scale;
+	//Vector2 fix = Vector2(scale,0);
+   // Vector2 fix2 = Vector2(scale/2,scale);
+   // Vector2 fix3 = Vector2(scale/2+scale,scale);
     Vector2 dd = Vector2(location.x,location.z);
     
     Vector2 n = (hextest(dd.x,dd.y, scale));
-    Vector2 nn = (hextest(dd.x+fix.x,dd.y+fix.y, scale));
-    Vector2 nnn = (hextest(dd.x+fix2.x,dd.y+fix2.y, scale));
-    Vector2 nnnn = (hextest(dd.x+fix3.y,dd.y+fix3.y, scale));
-    float col  = max(0.0,1.0- n.distance_to(dd)/float(scale));
-    float col2 = max(0.0,1.0- nn.distance_to(dd+fix)/float(scale));
-    float col3 = max(0.0,1.0- nnn.distance_to(dd+fix2)/float(scale));
-    float col4 = max(0.0,1.0- nnnn.distance_to(dd+fix3)/float(scale));
+    //Vector2 nn = (hextest(dd.x+fix.x,dd.y+fix.y, scale));
+    //Vector2 nnn = (hextest(dd.x+fix2.x,dd.y+fix2.y, scale));
+    //Vector2 nnnn = (hextest(dd.x+fix3.y,dd.y+fix3.y, scale));
+    //float col  = max(0.0,1.0- n.distance_to(dd)/float(scale));
+    //float col2 = max(0.0,1.0- nn.distance_to(dd+fix)/float(scale));
+    //float col3 = max(0.0,1.0- nnn.distance_to(dd+fix2)/float(scale));
+    //float col4 = max(0.0,1.0- nnnn.distance_to(dd+fix3)/float(scale));
 
 
 	
 	Dictionary deets = genDeets(n,dd,plod,params);
-	Dictionary deet1 = genDeets(nn,dd,plod,params);
-	Dictionary deet2 = genDeets(nnn,dd,plod,params);
-	Dictionary deet3 = genDeets(nnnn,dd,plod,params);
-	Dictionary bb = Dictionary{};
-	for(int i = 0; i < deets.keys().size();i++){
-		bb[deets.keys()[i]] = 
-		float(deets[deets.keys()[i]])*col+
-		float(deet1[deets.keys()[i]])*col2+
-		float(deet2[deets.keys()[i]])*col3+
-		float(deet3[deets.keys()[i]])*col4;
-	}
-	return bb;
+	//Dictionary deet1 = genDeets(nn,dd,plod,params);
+	//Dictionary deet2 = genDeets(nnn,dd,plod,params);
+	//Dictionary deet3 = genDeets(nnnn,dd,plod,params);
+	//Dictionary bb = Dictionary{};
+	//for(int i = 0; i < deets.keys().size();i++){
+	//	bb[deets.keys()[i]] = 
+	//	float(deets[deets.keys()[i]])*col+
+	//	float(deet1[deets.keys()[i]])*col2+
+	//	float(deet2[deets.keys()[i]])*col3+
+	//	float(deet3[deets.keys()[i]])*col4;
+	//}
+	return deets;
 }
 Array VoxelGenHex::getMountainsAndSkyIslands(Dictionary d,int i,int k,Vector3 origin, int plod,int ys){
 	
@@ -204,7 +208,7 @@ Array VoxelGenHex::getBlocks(Vector3 origin,int lod,int xs,int ys,int zs, Parame
 	int plod = pow(2,lod);
 	int lakeheight = 24;
 	Array blocks = Array{};
-	if(origin.y > - 10000){
+	if(origin.y > - 100){
 		for(int i = 0; i < xs; i++){
 			Array BlocksI = Array{};
 			for(int k = 0; k < zs; k++){
@@ -228,6 +232,15 @@ void VoxelGenHex::set_seed(int seed) {
 int VoxelGenHex::get_seed() {
 	RWLockRead rlock(_parameters_lock);
 	return _parameters.seed;
+}
+void VoxelGenHex::set_scale(int scale) {
+	RWLockWrite wlock(_parameters_lock);
+	_parameters.scale = scale;
+}
+
+int VoxelGenHex::get_scale() {
+	RWLockRead rlock(_parameters_lock);
+	return _parameters.scale;
 }
 VoxelGenerator::Result VoxelGenHex::generate_block(VoxelBlockRequest &input) {
 	Result result;
@@ -280,5 +293,8 @@ int VoxelGenHex::get_used_channels_mask() const {
 void VoxelGenHex::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_seed", "isWater"), &VoxelGenHex::set_seed);
 	ClassDB::bind_method(D_METHOD("get_seed"), &VoxelGenHex::get_seed);
+	ClassDB::bind_method(D_METHOD("set_scale", "scale"), &VoxelGenHex::set_scale);
+	ClassDB::bind_method(D_METHOD("get_scale"), &VoxelGenHex::get_scale);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "seed"), "set_seed", "get_seed");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "scale"), "set_scale", "get_scale");
 }

@@ -6,6 +6,7 @@
 // The script is expected to properly handle multithreading.
  struct Parameters {
 		int seed = 0;
+        int scale = 500;
 	};
 class VoxelGenHex : public VoxelGenerator {
 	GDCLASS(VoxelGenHex, VoxelGenerator)
@@ -29,6 +30,8 @@ public:
     Dictionary genDeets( Vector2 location,Vector2 b,int plod,Parameters params);
     int get_seed();
     void set_seed(int seed);
+    int get_scale();
+    void set_scale(int scale);
 private:
 	static void _bind_methods();
    
