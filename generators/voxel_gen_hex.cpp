@@ -72,7 +72,7 @@ float VoxelGenHex::genMountainHeight(Vector2 location, int initialSize,float ss,
 	
 	float mtnheight = 0.0;
 	int size = initialSize;
-	Vector2 OldHex = hextest(int(location.x),int(location.y),(size));
+	Vector2 OldHex = hextest(int(location.x),int(location.y),params.scale );
 	for(int s = 0; s < 50; s++){
 		
 	Vector2 hex = hextest(int(location.x),int(location.y),(size));
@@ -86,7 +86,7 @@ float VoxelGenHex::genMountainHeight(Vector2 location, int initialSize,float ss,
 	//	modifier = max(0.0f,modifier);
 	//}
 	float height =  modifier * ss * ((cos((min(dist,float(size))/float(size))*3.1415)*0.5+0.5)*float(size));
-	if(OldHex.distance_to(hex)>size << 1){
+	if(OldHex.distance_to(hex)>params.scale ){
 		break;
 	}
 	mtnheight += height;
@@ -120,10 +120,10 @@ Dictionary VoxelGenHex::genDeets( Vector2 location,Vector2 b,int plod,Parameters
 	
 	Dictionary deets = Dictionary{};
 	
-	deets["EZislandWidth"] = xrandf_range(sed,10,1000);
+	deets["EZislandWidth"] = xrandf_range(sed,2,4);
 	deets["islandHeight"] = xrandf_range(sed,10,1000);
 	deets["islandScale"] = round(xrandf_range(sed,0.1,1.5)*4.0)/4.0+0.1;
-	deets["islandDensity"] = round(xrandf_range(sed,0.5,1.0)*4.0)/4.0+0.1;
+	deets["islandDensity"] = xrandf_range(sed,0.5,0.99);
 	
 	deets["islandDrip"] = round(xrandf_range(sed,0.1,3))+0.1;
 	deets["connectiveness"] = xrandf_range(sed,0.1,0.8);
@@ -131,10 +131,10 @@ Dictionary VoxelGenHex::genDeets( Vector2 location,Vector2 b,int plod,Parameters
 	deets["islandLift"] = float(deets["landheight"])+xrandf_range(sed,0,450);
 	deets["landScale"] = xrandf_range(sed,0.1,3);
 	deets["watertable"] = 3;
-	deets["tip"] = genMountainHeight(b,int(deets["EZislandWidth"]),1.0,plod,deets,params);
+	deets["tip"] = genMountainHeight(b,params.scale >> int(deets["EZislandWidth"]),1.0,plod,deets,params);
 	
 				//move to gendeets
-	deets["groundTip"] =  Math::lerp(genMountainHeight(b+Vector2(100,100),int(deets["landheight"]),deets["landScale"],plod,deets,params),deets["tip"],min(1.0f,float(deets["connectiveness"])));
+	deets["groundTip"] =  Math::lerp(genMountainHeight(b,params.scale,deets["landScale"],plod,deets,params),deets["tip"],min(1.0f,float(deets["connectiveness"])));
 	
 	
 	return deets;}
