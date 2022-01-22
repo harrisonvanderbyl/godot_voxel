@@ -14,7 +14,6 @@ Vector2 VoxelGenHex::hextest(int bbx,int bby, int zoom2){
 	int bunx = bbx;
 	int buny = bby;
 	int bununx = bbx;
-	int bununy = bby;
 	int zoom2x2 = zoom2<<1;
 	int zoom2x4 = zoom2<<2;
 	int zoom2d2 = zoom2>>1;
@@ -79,7 +78,6 @@ float VoxelGenHex::genMountainHeight(Vector2 location, int initialSize,float ss,
 	
 	float dist = hex.distance_to(location);
 	
-	float submountain = 0;
 	
 	float modifier = (get_hash(hex));
 	//if(params.isWater){
@@ -206,7 +204,6 @@ return smbuffer;
 };
 Array VoxelGenHex::getBlocks(Vector3 origin,int lod,int xs,int ys,int zs, Parameters params){
 	int plod = pow(2,lod);
-	int lakeheight = 24;
 	Array blocks = Array{};
 	if(origin.y > - 100){
 		for(int i = 0; i < xs; i++){
