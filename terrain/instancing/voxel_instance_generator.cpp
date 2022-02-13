@@ -7,7 +7,7 @@
 
 namespace {
 const float MAX_DENSITY = 1.f;
-const char *DENSITY_HINT_STRING = "0.0, 1.0, 0.01";
+const char *DENSITY_HINT_STRING = "0.0, 1.0, 0.001";
 } // namespace
 
 inline Vector3 normalized(Vector3 pos, float &length) {

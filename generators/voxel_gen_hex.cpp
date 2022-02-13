@@ -132,16 +132,24 @@ Dictionary VoxelGenHex::genDeets( Vector2 location,Vector2 b,int plod,Parameters
 	deets["tip"] = genMountainHeight(b,params.scale >> int(deets["EZislandWidth"]),1.0,plod,deets,params);
 	
 				//move to gendeets
-	deets["groundTip"] =  Math::lerp(genMountainHeight(b,params.scale,deets["landScale"],plod,deets,params),deets["tip"],min(1.0f,float(deets["connectiveness"])));
+	deets["groundTip"] =  Math::lerp(genMountainHeight(b,params.scale >> 1,deets["landScale"],plod,deets,params),deets["tip"],min(1.0f,float(deets["connectiveness"])));
 	
 	
 	return deets;}
 Dictionary VoxelGenHex::genDetails( Vector3 location,int plod,Parameters params){
+	Vector3 planespace = location;
+	Vector3 spherespace = Vector3();
+	//convert to spherical coordinates
+	Vector3 dir = (planespace-_parameters.center).normalized();
+	
+	spherespace.y = planespace.distance_to(_parameters.center)-_parameters.radius;
+	spherespace.x = Math::atan2(dir.z,dir.y)*_parameters.radius;
+	spherespace.z = Math::acos(dir.x)*_parameters.radius;
 	int scale = params.scale;
 	//Vector2 fix = Vector2(scale,0);
    // Vector2 fix2 = Vector2(scale/2,scale);
    // Vector2 fix3 = Vector2(scale/2+scale,scale);
-    Vector2 dd = Vector2(location.x,location.z);
+    Vector2 dd = Vector2(spherespace.x,spherespace.z);
     
     Vector2 n = (hextest(dd.x,dd.y, scale));
     //Vector2 nn = (hextest(dd.x+fix.x,dd.y+fix.y, scale));
@@ -174,7 +182,16 @@ Array VoxelGenHex::getMountainsAndSkyIslands(Dictionary d,int i,int k,Vector3 or
 
 	for(int j = 0; j < ys;j++){
 	smbuffer.append(1.0);
-	Vector3 a = (origin+Vector3(i,j,k)*plod)*scale;
+	Vector3 planespace = (origin+Vector3(i,j,k)*plod)*scale;
+	Vector3 spherespace = Vector3();
+	//convert to spherical coordinates
+	Vector3 dir = (planespace-_parameters.center).normalized();
+	
+	spherespace.y = planespace.distance_to(_parameters.center)-_parameters.radius;
+	spherespace.x = Math::atan2(dir.z,dir.y)*_parameters.radius;
+	spherespace.z = Math::acos(dir.x)*_parameters.radius;
+	Vector3 a = spherespace;
+
 	float tbd = 1.0;
 	float groundTip = d["groundTip"];
 	if(a.y < groundTip ){
@@ -205,7 +222,6 @@ return smbuffer;
 Array VoxelGenHex::getBlocks(Vector3 origin,int lod,int xs,int ys,int zs, Parameters params){
 	int plod = pow(2,lod);
 	Array blocks = Array{};
-	if(origin.y > - 100){
 		for(int i = 0; i < xs; i++){
 			Array BlocksI = Array{};
 			for(int k = 0; k < zs; k++){
@@ -218,7 +234,7 @@ Array VoxelGenHex::getBlocks(Vector3 origin,int lod,int xs,int ys,int zs, Parame
 			}
 			blocks.push_back(BlocksI);
 		}
-	}	
+	
 	return blocks;
 }
 void VoxelGenHex::set_seed(int seed) {
@@ -238,6 +254,22 @@ void VoxelGenHex::set_scale(int scale) {
 int VoxelGenHex::get_scale() {
 	RWLockRead rlock(_parameters_lock);
 	return _parameters.scale;
+}
+void VoxelGenHex::set_center(Vector3 center) {
+	RWLockWrite wlock(_parameters_lock);
+	_parameters.center = center;
+}
+Vector3 VoxelGenHex::get_center() {
+	RWLockRead rlock(_parameters_lock);
+	return _parameters.center;
+}
+void VoxelGenHex::set_radius(float radius) {
+	RWLockWrite wlock(_parameters_lock);
+	_parameters.radius = radius;
+}
+float VoxelGenHex::get_radius() {
+	RWLockRead rlock(_parameters_lock);
+	return _parameters.radius;
 }
 VoxelGenerator::Result VoxelGenHex::generate_block(VoxelBlockRequest &input) {
 	Result result;
@@ -292,6 +324,13 @@ void VoxelGenHex::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_seed"), &VoxelGenHex::get_seed);
 	ClassDB::bind_method(D_METHOD("set_scale", "scale"), &VoxelGenHex::set_scale);
 	ClassDB::bind_method(D_METHOD("get_scale"), &VoxelGenHex::get_scale);
+	ClassDB::bind_method(D_METHOD("set_center", "center"), &VoxelGenHex::set_center);
+	ClassDB::bind_method(D_METHOD("get_center"), &VoxelGenHex::get_center);
+	ClassDB::bind_method(D_METHOD("set_radius", "radius"), &VoxelGenHex::set_radius);
+	ClassDB::bind_method(D_METHOD("get_radius"), &VoxelGenHex::get_radius);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "seed"), "set_seed", "get_seed");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "scale"), "set_scale", "get_scale");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "center"), "set_center", "get_center");
+	ADD_PROPERTY(PropertyInfo(Variant::REAL, "radius"), "set_radius", "get_radius");
+
 }

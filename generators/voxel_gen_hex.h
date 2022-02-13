@@ -7,6 +7,8 @@
  struct Parameters {
 		int seed = 0;
         int scale = 500;
+        Vector3 center = Vector3(0,-2200,0);
+        float radius = 2200;
 	};
 class VoxelGenHex : public VoxelGenerator {
 	GDCLASS(VoxelGenHex, VoxelGenerator)
@@ -32,6 +34,10 @@ public:
     void set_seed(int seed);
     int get_scale();
     void set_scale(int scale);
+    Vector3 get_center();
+    void set_center(Vector3 center);
+    float get_radius();
+    void set_radius(float radius);
 private:
 	static void _bind_methods();
    
