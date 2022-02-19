@@ -68,7 +68,6 @@ void DuoMesh::_update() const {
 	PoolVector<Vector3> pointsa = arr2[VS::ARRAY_VERTEX];
 
 
-	int pca = points.size();
 
 	if (flip_faces) {
 		PoolVector<Vector3> normals = arr2[VS::ARRAY_NORMAL];
