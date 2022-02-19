@@ -4,7 +4,7 @@
 #include "core/math/random_number_generator.h"
 VoxelGenHex::VoxelGenHex() {
 }
-float scale = 1.0;
+float radscale = 0.5;
 Vector2 VoxelGenHex::hextest(int bbx,int bby, int zoom2){
     
 	
@@ -143,8 +143,8 @@ Dictionary VoxelGenHex::genDetails( Vector3 location,int plod,Parameters params)
 	Vector3 dir = (planespace-_parameters.center).normalized();
 	
 	spherespace.y = planespace.distance_to(_parameters.center)-_parameters.radius;
-	spherespace.x = Math::atan2(dir.z,dir.y)*_parameters.radius;
-	spherespace.z = Math::acos(dir.x)*_parameters.radius;
+	spherespace.x = Math::atan2(dir.z,dir.y)*_parameters.radius*radscale;
+	spherespace.z = Math::acos(dir.x)*_parameters.radius*radscale;
 	int scale = params.scale;
 	//Vector2 fix = Vector2(scale,0);
    // Vector2 fix2 = Vector2(scale/2,scale);
@@ -182,14 +182,14 @@ Array VoxelGenHex::getMountainsAndSkyIslands(Dictionary d,int i,int k,Vector3 or
 
 	for(int j = 0; j < ys;j++){
 	smbuffer.append(1.0);
-	Vector3 planespace = (origin+Vector3(i,j,k)*plod)*scale;
+	Vector3 planespace = (origin+Vector3(i,j,k)*plod);
 	Vector3 spherespace = Vector3();
 	//convert to spherical coordinates
 	Vector3 dir = (planespace-_parameters.center).normalized();
 	
 	spherespace.y = planespace.distance_to(_parameters.center)-_parameters.radius;
-	spherespace.x = Math::atan2(dir.z,dir.y)*_parameters.radius;
-	spherespace.z = Math::acos(dir.x)*_parameters.radius;
+	spherespace.x = Math::atan2(dir.z,dir.y)*_parameters.radius*radscale;
+	spherespace.z = Math::acos(dir.x)*_parameters.radius*radscale;
 	Vector3 a = spherespace;
 
 	float tbd = 1.0;
@@ -225,7 +225,7 @@ Array VoxelGenHex::getBlocks(Vector3 origin,int lod,int xs,int ys,int zs, Parame
 		for(int i = 0; i < xs; i++){
 			Array BlocksI = Array{};
 			for(int k = 0; k < zs; k++){
-				Dictionary d = genDetails((origin+Vector3(i,0,k)*plod)*scale,plod,params);
+				Dictionary d = genDetails((origin+Vector3(i,0,k)*plod),plod,params);
 				
 				
 				

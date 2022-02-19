@@ -4,10 +4,11 @@
 #include <core/resource.h>
 #include <scene/3d/mesh_instance.h>
 #include <scene/resources/primitive_meshes.h>
+#include "duomesh.h"
 // Generator based on a script, like GDScript, C# or NativeScript.
 // The script is expected to properly handle multithreading.
-class TreeGen  : public PrimitiveMesh  {
-	GDCLASS(TreeGen, PrimitiveMesh)
+class TreeGen  : public DuoMesh  {
+	GDCLASS(TreeGen, DuoMesh)
 private:
 	float order = 2;
 	float une = 0.5;
@@ -29,7 +30,7 @@ private:
 	Array transforms;
 protected:
 	static void _bind_methods();
-	virtual void _create_mesh_array(Array &p_arr) const;
+	virtual void _create_mesh_array(Array &p_arr, Dictionary tr) const;
 	
 public:
 	
@@ -74,7 +75,7 @@ public:
 	void updateParts ();
 	Dictionary gen( float w,float h,Transform home) const;
     Dictionary addtreebranch(Dictionary inf) const;
-	Dictionary createTree() const;
+	virtual Dictionary createTree() const;
 
 	TreeGen(){};
 	

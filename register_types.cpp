@@ -14,6 +14,7 @@
 #include "generators/voxel_generator_script.h"
 #include "generators/voxel_gen_hex.h"
 #include "trees/treegen.h"
+#include "trees/flowergen.h"
 #include "meshers/blocky/voxel_library.h"
 #include "meshers/blocky/voxel_mesher_blocky.h"
 #include "meshers/cubes/voxel_mesher_cubes.h"
@@ -110,6 +111,7 @@ void register_voxel_types() {
 	ClassDB::register_class<VoxelGenHex>();
 	// Utilities
 	ClassDB::register_class<TreeGen>();
+	ClassDB::register_class<FlowerGen>();
 	ClassDB::register_class<VoxelBoxMover>();
 	ClassDB::register_class<VoxelRaycastResult>();
 	ClassDB::register_virtual_class<VoxelTool>();
