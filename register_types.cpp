@@ -13,6 +13,9 @@
 #include "generators/simple/voxel_generator_noise_2d.h"
 #include "generators/simple/voxel_generator_waves.h"
 #include "generators/voxel_generator_script.h"
+#include "generators/voxel_gen_hex.h"
+#include "generators/flowergen.h"
+#include "generators/treegen.h"
 #include "meshers/blocky/voxel_blocky_library.h"
 #include "meshers/blocky/voxel_mesher_blocky.h"
 #include "meshers/cubes/voxel_mesher_cubes.h"
@@ -117,7 +120,10 @@ void register_voxel_types() {
 	ClassDB::register_class<VoxelGeneratorNoise>();
 	ClassDB::register_class<VoxelGeneratorGraph>();
 	ClassDB::register_class<VoxelGeneratorScript>();
+    ClassDB::register_class<VoxelGenHex>();
 
+	ClassDB::register_class<TreeGen>();
+	ClassDB::register_class<FlowerGen>();
 	// Utilities
 	ClassDB::register_class<VoxelBoxMover>();
 	ClassDB::register_class<VoxelRaycastResult>();
