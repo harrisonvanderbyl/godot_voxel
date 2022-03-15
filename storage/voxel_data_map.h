@@ -107,17 +107,15 @@ public:
 
 	int get_block_count() const;
 
-	// TODO Rename for_each_block
 	template <typename Op_T>
-	inline void for_all_blocks(Op_T op) {
+	inline void for_each_block(Op_T op) {
 		for (auto it = _blocks.begin(); it != _blocks.end(); ++it) {
 			op(*it);
 		}
 	}
 
-	// TODO Rename for_each_block
 	template <typename Op_T>
-	inline void for_all_blocks(Op_T op) const {
+	inline void for_each_block(Op_T op) const {
 		for (auto it = _blocks.begin(); it != _blocks.end(); ++it) {
 			op(*it);
 		}
@@ -218,6 +216,7 @@ struct VoxelDataLodMap {
 		// It is possible to unlock it after we are done querying the map.
 		RWLock map_lock;
 	};
+	// Each LOD works in a set of coordinates spanning 2x more voxels the higher their index is
 	FixedArray<Lod, constants::MAX_LOD> lods;
 	unsigned int lod_count = 1;
 };

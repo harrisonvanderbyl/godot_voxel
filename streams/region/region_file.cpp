@@ -302,10 +302,20 @@ const RegionFormat &RegionFile::get_format() const {
 	return _header.format;
 }
 
+bool RegionFile::is_valid_block_position(const Vector3 position) const {
+	return position.x >= 0 && //
+			position.y >= 0 && //
+			position.z >= 0 && //
+			position.x < _header.format.region_size.x && //
+			position.y < _header.format.region_size.y && //
+			position.z < _header.format.region_size.z;
+}
+
 Error RegionFile::load_block(Vector3i position, VoxelBufferInternal &out_block) {
 	ERR_FAIL_COND_V(_file_access == nullptr, ERR_FILE_CANT_READ);
 	FileAccess *f = _file_access;
 
+	ERR_FAIL_COND_V(!is_valid_block_position(position), ERR_INVALID_PARAMETER);
 	const unsigned int lut_index = get_block_index_in_header(position);
 	ERR_FAIL_COND_V(lut_index >= _header.blocks.size(), ERR_INVALID_PARAMETER);
 	const RegionBlockInfo &block_info = _header.blocks[lut_index];
@@ -336,6 +346,7 @@ Error RegionFile::load_block(Vector3i position, VoxelBufferInternal &out_block) 
 
 Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 	ERR_FAIL_COND_V(_header.format.verify_block(block) == false, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(!is_valid_block_position(position), ERR_INVALID_PARAMETER);
 
 	ERR_FAIL_COND_V(_file_access == nullptr, ERR_FILE_CANT_WRITE);
 	FileAccess *f = _file_access;
@@ -361,11 +372,13 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 		BlockSerializer::SerializeResult res = BlockSerializer::serialize_and_compress(block);
 		ERR_FAIL_COND_V(!res.success, ERR_INVALID_PARAMETER);
 		f->store_32(res.data.size());
-		const unsigned int written_size = sizeof(int) + res.data.size();
+		const unsigned int written_size = sizeof(uint32_t) + res.data.size();
 		f->store_buffer(res.data.data(), res.data.size());
 
 		const unsigned int end_pos = f->get_position();
-		CRASH_COND(written_size != (end_pos - block_offset));
+		CRASH_COND_MSG(written_size != (end_pos - block_offset),
+				String("written_size: {0}, block_offset: {1}, end_pos: {2}")
+						.format(varray(written_size, end_pos, block_offset)));
 		pad_to_sector_size(f);
 
 		block_info.set_sector_index((block_offset - _blocks_begin_offset) / _header.format.sector_size);
@@ -389,7 +402,7 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 		BlockSerializer::SerializeResult res = BlockSerializer::serialize_and_compress(block);
 		ERR_FAIL_COND_V(!res.success, ERR_INVALID_PARAMETER);
 		const std::vector<uint8_t> &data = res.data;
-		const int written_size = sizeof(int) + data.size();
+		const int written_size = sizeof(uint32_t) + data.size();
 
 		const int new_sector_count = get_sector_count_from_bytes(written_size);
 		CRASH_COND(new_sector_count < 1);
@@ -416,7 +429,9 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 			// The block now uses more sectors, we have to move others.
 			// Note: we could shift blocks forward, but we can also remove the block entirely and rewrite it at the end.
 			// Need to investigate if it's worth implementing forward shift instead.
+			// TODO Prefer doing an end swap kind of thing?
 
+			// This also shifts the rest of the file so the freed sectors may get re-occupied.
 			remove_sectors_from_block(position, old_sector_count);
 
 			const int block_offset = _blocks_begin_offset + _sectors.size() * _header.format.sector_size;
@@ -480,8 +495,7 @@ void RegionFile::remove_sectors_from_block(Vector3i block_pos, unsigned int p_se
 
 	unsigned int dst_offset = src_offset - p_sector_count * sector_size;
 
-	// Note: removing the last block from a region doesn't make the file invalid, but is not a known use case
-	CRASH_COND(_sectors.size() - p_sector_count <= 0);
+	CRASH_COND(_sectors.size() < p_sector_count);
 	CRASH_COND(src_offset - sector_size < dst_offset);
 	CRASH_COND(block_info.get_sector_index() + p_sector_count > _sectors.size());
 	CRASH_COND(p_sector_count > block_info.get_sector_count());
@@ -621,6 +635,7 @@ unsigned int RegionFile::get_header_block_count() const {
 
 bool RegionFile::has_block(Vector3i position) const {
 	ERR_FAIL_COND_V(!is_open(), false);
+	ERR_FAIL_COND_V(!is_valid_block_position(position), false);
 	const unsigned int bi = get_block_index_in_header(position);
 	return _header.blocks[bi].data != 0;
 }

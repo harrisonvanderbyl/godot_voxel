@@ -4,7 +4,7 @@
 #include "../edition/voxel_tool_terrain.h"
 #include "../server/voxel_server.h"
 #include "../server/voxel_server_updater.h"
-#include "../storage/voxel_buffer.h"
+#include "../storage/voxel_buffer_gd.h"
 #include "../util/funcs.h"
 #include "../util/macros.h"
 #include "../util/profiling.h"
@@ -263,7 +263,7 @@ void VoxelTerrain::_on_stream_params_changed() {
 
 void VoxelTerrain::_on_gi_mode_changed() {
 	const GIMode gi_mode = get_gi_mode();
-	_mesh_map.for_all_blocks([gi_mode](VoxelMeshBlock *block) { //
+	_mesh_map.for_each_block([gi_mode](VoxelMeshBlock *block) { //
 		block->set_gi_mode(DirectMeshInstance::GIMode(gi_mode));
 	});
 }
@@ -316,7 +316,7 @@ void VoxelTerrain::set_generate_collisions(bool enabled) {
 
 void VoxelTerrain::set_collision_layer(int layer) {
 	_collision_layer = layer;
-	_mesh_map.for_all_blocks([layer](VoxelMeshBlock *block) { //
+	_mesh_map.for_each_block([layer](VoxelMeshBlock *block) { //
 		block->set_collision_layer(layer);
 	});
 }
@@ -327,7 +327,7 @@ int VoxelTerrain::get_collision_layer() const {
 
 void VoxelTerrain::set_collision_mask(int mask) {
 	_collision_mask = mask;
-	_mesh_map.for_all_blocks([mask](VoxelMeshBlock *block) { //
+	_mesh_map.for_each_block([mask](VoxelMeshBlock *block) { //
 		block->set_collision_mask(mask);
 	});
 }
@@ -338,7 +338,7 @@ int VoxelTerrain::get_collision_mask() const {
 
 void VoxelTerrain::set_collision_margin(float margin) {
 	_collision_margin = margin;
-	_mesh_map.for_all_blocks([margin](VoxelMeshBlock *block) { //
+	_mesh_map.for_each_block([margin](VoxelMeshBlock *block) { //
 		block->set_collision_margin(margin);
 	});
 }
@@ -628,7 +628,7 @@ void VoxelTerrain::unload_mesh_block(Vector3i bpos) {
 
 void VoxelTerrain::save_all_modified_blocks(bool with_copy) {
 	// That may cause a stutter, so should be used when the player won't notice
-	_data_map.for_all_blocks(ScheduleSaveAction{ _blocks_to_save, with_copy });
+	_data_map.for_each_block(ScheduleSaveAction{ _blocks_to_save, with_copy });
 	// And flush immediately
 	send_block_data_requests();
 }
@@ -685,11 +685,11 @@ void VoxelTerrain::stop_updater() {
 	_blocks_pending_update.clear();
 
 	ResetMeshStateAction a;
-	_mesh_map.for_all_blocks(a);
+	_mesh_map.for_each_block(a);
 }
 
 void VoxelTerrain::remesh_all_blocks() {
-	_mesh_map.for_all_blocks([this](VoxelMeshBlock *block) { //
+	_mesh_map.for_each_block([this](VoxelMeshBlock *block) { //
 		try_schedule_mesh_update(block);
 	});
 }
@@ -743,7 +743,7 @@ void VoxelTerrain::stop_streamer() {
 void VoxelTerrain::reset_map() {
 	// Discard everything, to reload it all
 
-	_data_map.for_all_blocks([this](VoxelDataBlock *block) { emit_data_block_unloaded(block); });
+	_data_map.for_each_block([this](VoxelDataBlock *block) { emit_data_block_unloaded(block); });
 	_data_map.create(get_data_block_size_pow2(), 0);
 
 	_mesh_map.create(get_mesh_block_size_pow2(), 0);
@@ -830,15 +830,15 @@ void VoxelTerrain::_notification(int p_what) {
 			break;
 
 		case NOTIFICATION_ENTER_WORLD:
-			_mesh_map.for_all_blocks(SetWorldAction(*get_world_3d()));
+			_mesh_map.for_each_block(SetWorldAction(*get_world_3d()));
 			break;
 
 		case NOTIFICATION_EXIT_WORLD:
-			_mesh_map.for_all_blocks(SetWorldAction(nullptr));
+			_mesh_map.for_each_block(SetWorldAction(nullptr));
 			break;
 
 		case NOTIFICATION_VISIBILITY_CHANGED:
-			_mesh_map.for_all_blocks(SetParentVisibilityAction(is_visible()));
+			_mesh_map.for_each_block(SetParentVisibilityAction(is_visible()));
 			break;
 
 		case NOTIFICATION_TRANSFORM_CHANGED: {
@@ -851,7 +851,7 @@ void VoxelTerrain::_notification(int p_what) {
 				return;
 			}
 
-			_mesh_map.for_all_blocks([&transform](VoxelMeshBlock *block) { //
+			_mesh_map.for_each_block([&transform](VoxelMeshBlock *block) { //
 				block->set_parent_transform(transform);
 			});
 
@@ -893,8 +893,7 @@ void VoxelTerrain::send_block_data_requests() {
 }
 
 void VoxelTerrain::emit_data_block_loaded(const VoxelDataBlock *block) {
-	const Variant vpos = block->position;
-	// Not sure about exposDing buffers directly... some stuff on them is useful to obtain directly,
+	// Not sure about exposing buffers directly... some stuff on them is useful to obtain directly,
 	// but also it allows scripters to mess with voxels in a way they should not.
 	// Example: modifying voxels without locking them first, while another thread may be reading them at the same
 	// time. The same thing could happen the other way around (threaded task modifying voxels while you try to read
@@ -903,16 +902,13 @@ void VoxelTerrain::emit_data_block_loaded(const VoxelDataBlock *block) {
 	// absolutely necessary, buffers aren't exposed. Workaround: use VoxelTool
 	//const Variant vbuffer = block->voxels;
 	//const Variant *args[2] = { &vpos, &vbuffer };
-	const Variant *args[1] = { &vpos };
-	emit_signal(VoxelStringNames::get_singleton()->block_loaded, args, 1);
+	emit_signal(VoxelStringNames::get_singleton()->block_loaded, block->position);
 }
 
 void VoxelTerrain::emit_data_block_unloaded(const VoxelDataBlock *block) {
-	const Variant vpos = block->position;
 	// const Variant vbuffer = block->voxels;
 	// const Variant *args[2] = { &vpos, &vbuffer };
-	const Variant *args[1] = { &vpos };
-	emit_signal(VoxelStringNames::get_singleton()->block_unloaded, args, 1);
+	emit_signal(VoxelStringNames::get_singleton()->block_unloaded, block->position);
 }
 
 bool VoxelTerrain::try_get_paired_viewer_index(uint32_t id, size_t &out_i) const {
@@ -1546,7 +1542,7 @@ AABB VoxelTerrain::_b_get_bounds() const {
 	return AABB(b.pos, b.size);
 }
 
-bool VoxelTerrain::_b_try_set_block_data(Vector3i position, Ref<VoxelBuffer> voxel_data) {
+bool VoxelTerrain::_b_try_set_block_data(Vector3i position, Ref<gd::VoxelBuffer> voxel_data) {
 	ERR_FAIL_COND_V(voxel_data.is_null(), false);
 	std::shared_ptr<VoxelBufferInternal> buffer = voxel_data->get_buffer_shared();
 	return try_set_block_data(position, buffer);

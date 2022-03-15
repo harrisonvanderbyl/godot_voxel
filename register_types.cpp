@@ -22,7 +22,7 @@
 #include "meshers/dmc/voxel_mesher_dmc.h"
 #include "meshers/transvoxel/voxel_mesher_transvoxel.h"
 #include "server/voxel_server_gd.h"
-#include "storage/voxel_buffer.h"
+#include "storage/voxel_buffer_gd.h"
 #include "storage/voxel_memory_pool.h"
 #include "streams/region/voxel_stream_region_files.h"
 #include "streams/sqlite/voxel_stream_sqlite.h"
@@ -86,16 +86,16 @@ void register_voxel_types() {
 	ClassDB::register_class<VoxelBlockyLibrary>();
 	ClassDB::register_class<VoxelColorPalette>();
 	ClassDB::register_class<VoxelInstanceLibrary>();
-	ClassDB::register_virtual_class<VoxelInstanceLibraryItem>();
+	ClassDB::register_abstract_class<VoxelInstanceLibraryItem>();
 	ClassDB::register_class<VoxelInstanceLibraryMultiMeshItem>();
 	ClassDB::register_class<VoxelInstanceLibrarySceneItem>();
 	ClassDB::register_class<VoxelDataBlockEnterInfo>();
 
 	// Storage
-	ClassDB::register_class<VoxelBuffer>();
+	ClassDB::register_class<gd::VoxelBuffer>();
 
 	// Nodes
-	ClassDB::register_virtual_class<VoxelNode>();
+	ClassDB::register_abstract_class<VoxelNode>();
 	ClassDB::register_class<VoxelTerrain>();
 	ClassDB::register_class<VoxelLodTerrain>();
 	ClassDB::register_class<VoxelViewer>();
@@ -104,17 +104,17 @@ void register_voxel_types() {
 	ClassDB::register_class<VoxelInstanceComponent>();
 
 	// Streams
-	ClassDB::register_virtual_class<VoxelStream>();
+	ClassDB::register_abstract_class<VoxelStream>();
 	ClassDB::register_class<VoxelStreamBlockFiles>();
 	ClassDB::register_class<VoxelStreamRegionFiles>();
 	ClassDB::register_class<VoxelStreamScript>();
 	ClassDB::register_class<VoxelStreamSQLite>();
 
 	// Generators
-	ClassDB::register_virtual_class<VoxelGenerator>();
+	ClassDB::register_abstract_class<VoxelGenerator>();
 	ClassDB::register_class<VoxelGeneratorFlat>();
 	ClassDB::register_class<VoxelGeneratorWaves>();
-	ClassDB::register_virtual_class<VoxelGeneratorHeightmap>();
+	ClassDB::register_abstract_class<VoxelGeneratorHeightmap>();
 	ClassDB::register_class<VoxelGeneratorImage>();
 	ClassDB::register_class<VoxelGeneratorNoise2D>();
 	ClassDB::register_class<VoxelGeneratorNoise>();
@@ -127,12 +127,12 @@ void register_voxel_types() {
 	// Utilities
 	ClassDB::register_class<VoxelBoxMover>();
 	ClassDB::register_class<VoxelRaycastResult>();
-	ClassDB::register_virtual_class<VoxelTool>();
-	ClassDB::register_virtual_class<VoxelToolTerrain>();
-	ClassDB::register_virtual_class<VoxelToolLodTerrain>();
+	ClassDB::register_abstract_class<VoxelTool>();
+	ClassDB::register_abstract_class<VoxelToolTerrain>();
+	ClassDB::register_abstract_class<VoxelToolLodTerrain>();
 	// I had to bind this one despite it being useless as-is because otherwise Godot lazily initializes its class.
 	// And this can happen in a thread, causing crashes due to the concurrent access
-	ClassDB::register_virtual_class<VoxelToolBuffer>();
+	ClassDB::register_abstract_class<VoxelToolBuffer>();
 	ClassDB::register_class<gd::VoxelBlockSerializer>();
 	ClassDB::register_class<VoxelVoxLoader>();
 	ClassDB::register_class<FastNoiseLite>();
@@ -143,7 +143,7 @@ void register_voxel_types() {
 #endif
 
 	// Meshers
-	ClassDB::register_virtual_class<VoxelMesher>();
+	ClassDB::register_abstract_class<VoxelMesher>();
 	ClassDB::register_class<VoxelMesherBlocky>();
 	ClassDB::register_class<VoxelMesherTransvoxel>();
 	ClassDB::register_class<VoxelMesherDMC>();
@@ -152,11 +152,14 @@ void register_voxel_types() {
 	// Reminder: how to create a singleton accessible from scripts:
 	// Engine::get_singleton()->add_singleton(Engine::Singleton("SingletonName",singleton_instance));
 
+	// Reminders
+	PRINT_VERBOSE(String("Size of Variant: {0}").format(varray((int)sizeof(Variant))));
 	PRINT_VERBOSE(String("Size of Object: {0}").format(varray((int)sizeof(Object))));
 	PRINT_VERBOSE(String("Size of RefCounted: {0}").format(varray((int)sizeof(RefCounted))));
 	PRINT_VERBOSE(String("Size of Node: {0}").format(varray((int)sizeof(Node))));
 	PRINT_VERBOSE(String("Size of Node3D: {0}").format(varray((int)sizeof(Node3D))));
-	PRINT_VERBOSE(String("Size of VoxelBuffer: {0}").format(varray((int)sizeof(VoxelBuffer))));
+	PRINT_VERBOSE(String("Size of gd::VoxelBuffer: {0}").format(varray((int)sizeof(gd::VoxelBuffer))));
+	PRINT_VERBOSE(String("Size of VoxelBufferInternal: {0}").format(varray((int)sizeof(VoxelBufferInternal))));
 	PRINT_VERBOSE(String("Size of VoxelMeshBlock: {0}").format(varray((int)sizeof(VoxelMeshBlock))));
 	PRINT_VERBOSE(String("Size of VoxelTerrain: {0}").format(varray((int)sizeof(VoxelTerrain))));
 	PRINT_VERBOSE(String("Size of VoxelLodTerrain: {0}").format(varray((int)sizeof(VoxelLodTerrain))));

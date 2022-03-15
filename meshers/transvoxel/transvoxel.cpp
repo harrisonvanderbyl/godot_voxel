@@ -107,12 +107,12 @@ inline Vector3i dir_to_prev_vec(uint8_t dir) {
 	return Vector3i(-(dir & 1), -((dir >> 1) & 1), -((dir >> 2) & 1));
 }
 
-inline float sdf_as_float(uint8_t v) {
-	return -u8_to_norm(v);
+inline float sdf_as_float(int8_t v) {
+	return -s8_to_snorm_noclamp(v);
 }
 
-inline float sdf_as_float(uint16_t v) {
-	return -u16_to_norm(v);
+inline float sdf_as_float(int16_t v) {
+	return -s16_to_snorm_noclamp(v);
 }
 
 inline float sdf_as_float(float v) {
@@ -166,7 +166,7 @@ struct CellTextureDatas {
 };
 
 template <unsigned int NVoxels, typename WeightSampler_T>
-CellTextureDatas<NVoxels> select_textures(const FixedArray<unsigned int, NVoxels> &voxel_indices,
+CellTextureDatas<NVoxels> select_textures_4_per_voxel(const FixedArray<unsigned int, NVoxels> &voxel_indices,
 		Span<const uint16_t> indices_data, const WeightSampler_T &weights_sampler) {
 	// TODO Optimization: this function takes almost half of the time when polygonizing non-empty cells.
 	// I wonder how it can be optimized further?
@@ -257,7 +257,7 @@ inline void get_cell_texture_data(CellTextureDatas<NVoxels> &cell_textures,
 
 	} else {
 		// There can be more than 4 indices or they are not known, so we have to select them
-		cell_textures = select_textures(voxel_indices, texture_indices_data.buffer, weights_data);
+		cell_textures = select_textures_4_per_voxel(voxel_indices, texture_indices_data.buffer, weights_data);
 	}
 }
 
@@ -265,13 +265,13 @@ template <typename Sdf_T>
 inline Sdf_T get_isolevel() = delete;
 
 template <>
-inline uint8_t get_isolevel<uint8_t>() {
-	return 128;
+inline int8_t get_isolevel<int8_t>() {
+	return 0;
 }
 
 template <>
-inline uint16_t get_isolevel<uint16_t>() {
-	return 32768;
+inline int16_t get_isolevel<int16_t>() {
+	return 0;
 }
 
 template <>
@@ -323,7 +323,8 @@ void build_regular_mesh(Span<const Sdf_T> sdf_data, TextureIndicesData texture_i
 				{
 					const bool s = sdf_data[data_index] < isolevel;
 
-					if ((sdf_data[data_index + n010] < isolevel) == s &&
+					if ( //
+							(sdf_data[data_index + n010] < isolevel) == s &&
 							(sdf_data[data_index + n100] < isolevel) == s &&
 							(sdf_data[data_index + n110] < isolevel) == s &&
 							(sdf_data[data_index + n001] < isolevel) == s &&
@@ -360,21 +361,6 @@ void build_regular_mesh(Span<const Sdf_T> sdf_data, TextureIndicesData texture_i
 				FixedArray<float, 8> cell_samples_sdf;
 				for (unsigned int i = 0; i < corner_data_indices.size(); ++i) {
 					cell_samples_sdf[i] = sdf_as_float(sdf_data[corner_data_indices[i]]);
-					// TODO Need to investigate if there is a better way to eliminate degenerate triangles.
-					//
-					// Presence of zeroes in samples occurs more often when precision is scarce
-					// (8-bit, scaled SDF, or slow gradients).
-					// This causes two symptoms:
-					// - Degenerate triangles. Potentially bad for systems using the mesh later (MeshOptimizer, physics)
-					// - Glitched triangles. Wrong vertices get re-used.
-					//   Needs closer investigation to know why, maybe related to case selection
-					//
-					// See also https://github.com/zeux/meshoptimizer/issues/312
-					//
-					// This is a quick fix to avoid it.
-					if (cell_samples_sdf[i] == 0.f) {
-						cell_samples_sdf[i] = 0.0001f;
-					}
 				}
 
 				// Concatenate the sign of cell values to obtain the case code.
@@ -1212,6 +1198,40 @@ struct WeightSamplerPackedU16 {
 thread_local std::vector<uint16_t> s_weights_backing_buffer_u16;
 #endif
 
+// Presence of zeroes in samples occurs more often when precision is scarce
+// (8-bit, scaled SDF, or slow gradients).
+// This causes two symptoms:
+// - Degenerate triangles. Potentially bad for systems using the mesh later (MeshOptimizer, physics)
+// - Glitched triangles. Wrong vertices get re-used.
+//   Needs closer investigation to know why, maybe related to case selection
+//
+// See also https://github.com/zeux/meshoptimizer/issues/312
+//
+// A quick fix to avoid it is to add a tiny offset to values equal to the isolevel.
+// It must be done on the whole buffer to ensure consistency (and not after early cell rejection),
+// otherwise it can create gaps in the final mesh.
+//
+// Not used anymore for now, but if we get this problem again we may have to investigate
+//
+/*template <typename Sdf_T>
+Span<const Sdf_T> apply_zero_sdf_fix(Span<const Sdf_T> p_sdf_data) {
+	VOXEL_PROFILE_SCOPE();
+
+	static thread_local std::vector<Sdf_T> s_sdf_backing_buffer;
+	std::vector<Sdf_T> &sdf_data = s_sdf_backing_buffer;
+
+	sdf_data.resize(p_sdf_data.size());
+	memcpy(sdf_data.data(), p_sdf_data.data(), p_sdf_data.size());
+
+	for (auto it = sdf_data.begin(); it != sdf_data.end(); ++it) {
+		if (*it == get_isolevel<Sdf_T>()) {
+			// Assuming Sdf_T is an integer. Might not be needed for floats.
+			*it += 1;
+		}
+	}
+	return to_span_const(sdf_data);
+}*/
+
 DefaultTextureIndicesData build_regular_mesh(const VoxelBufferInternal &voxels, unsigned int sdf_channel, int lod_index,
 		TexturingMode texturing_mode, Cache &cache, MeshArrays &output) {
 	VOXEL_PROFILE_SCOPE();
@@ -1259,14 +1279,14 @@ DefaultTextureIndicesData build_regular_mesh(const VoxelBufferInternal &voxels, 
 	// which would otherwise harm performance in tight iterations
 	switch (voxels.get_channel_depth(sdf_channel)) {
 		case VoxelBufferInternal::DEPTH_8_BIT: {
-			Span<const uint8_t> sdf_data = sdf_data_raw.reinterpret_cast_to<const uint8_t>();
-			build_regular_mesh<uint8_t>(
+			Span<const int8_t> sdf_data = sdf_data_raw.reinterpret_cast_to<const int8_t>();
+			build_regular_mesh<int8_t>(
 					sdf_data, indices_data, weights_data, voxels.get_size(), lod_index, texturing_mode, cache, output);
 		} break;
 
 		case VoxelBufferInternal::DEPTH_16_BIT: {
-			Span<const uint16_t> sdf_data = sdf_data_raw.reinterpret_cast_to<const uint16_t>();
-			build_regular_mesh<uint16_t>(
+			Span<const int16_t> sdf_data = sdf_data_raw.reinterpret_cast_to<const int16_t>();
+			build_regular_mesh<int16_t>(
 					sdf_data, indices_data, weights_data, voxels.get_size(), lod_index, texturing_mode, cache, output);
 		} break;
 
@@ -1349,14 +1369,14 @@ void build_transition_mesh(const VoxelBufferInternal &voxels, unsigned int sdf_c
 
 	switch (voxels.get_channel_depth(sdf_channel)) {
 		case VoxelBufferInternal::DEPTH_8_BIT: {
-			Span<const uint8_t> sdf_data = sdf_data_raw.reinterpret_cast_to<const uint8_t>();
-			build_transition_mesh<uint8_t>(sdf_data, indices_data, weights_data, voxels.get_size(), direction,
-					lod_index, texturing_mode, cache, output);
+			Span<const int8_t> sdf_data = sdf_data_raw.reinterpret_cast_to<const int8_t>();
+			build_transition_mesh<int8_t>(sdf_data, indices_data, weights_data, voxels.get_size(), direction, lod_index,
+					texturing_mode, cache, output);
 		} break;
 
 		case VoxelBufferInternal::DEPTH_16_BIT: {
-			Span<const uint16_t> sdf_data = sdf_data_raw.reinterpret_cast_to<const uint16_t>();
-			build_transition_mesh<uint16_t>(sdf_data, indices_data, weights_data, voxels.get_size(), direction,
+			Span<const int16_t> sdf_data = sdf_data_raw.reinterpret_cast_to<const int16_t>();
+			build_transition_mesh<int16_t>(sdf_data, indices_data, weights_data, voxels.get_size(), direction,
 					lod_index, texturing_mode, cache, output);
 		} break;
 

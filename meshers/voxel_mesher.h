@@ -7,7 +7,9 @@
 
 namespace zylann::voxel {
 
+namespace gd {
 class VoxelBuffer;
+}
 class VoxelBufferInternal;
 
 class VoxelMesher : public Resource {
@@ -31,7 +33,7 @@ public:
 	virtual void build(Output &output, const Input &voxels);
 
 	// Builds a mesh from the given voxels. This function is simplified to be used by the script API.
-	Ref<Mesh> build_mesh(Ref<VoxelBuffer> voxels, TypedArray<Material> materials);
+	Ref<Mesh> build_mesh(Ref<gd::VoxelBuffer> voxels, TypedArray<Material> materials);
 
 	// Gets how many neighbor voxels need to be accessed around the meshed area, toward negative axes.
 	// If this is not respected, the mesher might produce seams at the edges, or an error
@@ -55,6 +57,10 @@ public:
 	virtual bool supports_lod() const {
 		return true;
 	}
+
+#ifdef TOOLS_ENABLED
+	virtual void get_configuration_warnings(TypedArray<String> &out_warnings) const {}
+#endif
 
 protected:
 	static void _bind_methods();
