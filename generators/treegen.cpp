@@ -336,7 +336,7 @@ void TreeGen::_create_mesh_array(Array &p_arr, Dictionary tr) const {
 				Vector3 p =((cur)*Transform3D(Basis(1, 0, 0, 0, 1, 0, 0, 0, 1 ),pointa)).origin;	
 				Vector3 c = ((cur)*Transform3D(Basis(1, 0, 0, 0, 1, 0, 0, 0, 1 ),Vector3(0,y,0))).origin;
 				Vector3 nn = (p-(c)).normalized();
-				Vector3 tangent = cur.basis.elements[1].normalized().cross(nn).normalized();
+				Vector3 tangent = cur.basis[1].normalized().cross(nn).normalized();
 				points.push_back(p);
 				normals.push_back(nn);
 				ADD_TANGENT(tangent.x,tangent.y,tangent.z, 1.0)
