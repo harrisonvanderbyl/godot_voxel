@@ -2,7 +2,7 @@
 #include "../constants/voxel_string_names.h"
 #include "../util/godot/funcs.h"
 #include "../constants/voxel_string_names.h"
-#include "../storage/voxel_buffer.h"
+#include "../storage/voxel_buffer_gd.h"
 #include "../util/godot/funcs.h"
 #include "core/math/random_number_generator.h"
 
@@ -284,7 +284,7 @@ zylann::voxel::VoxelGenerator::Result VoxelGenHex::generate_block(zylann::voxel:
 		params = _parameters;
 	}
 	// Create a temporary wrapper so Godot can pass it to scripts
-	Ref<zylann::voxel ::VoxelBuffer> buffer_wrapper;
+	Ref<zylann::voxel ::gd::VoxelBuffer> buffer_wrapper;
 	buffer_wrapper.instantiate();
 	buffer_wrapper->get_buffer().copy_format(input.voxel_buffer);
 	buffer_wrapper->get_buffer().create(input.voxel_buffer.get_size());
