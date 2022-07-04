@@ -8,13 +8,13 @@ class GraphEdit;
 class PopupMenu;
 class AcceptDialog;
 class UndoRedo;
-class Node3D;
 
 namespace zylann::voxel {
 
 class VoxelGeneratorGraph;
 class VoxelRangeAnalysisDialog;
 class VoxelNode;
+class VoxelGraphEditorShaderDialog;
 
 // Main GUI of the graph editor
 class VoxelGraphEditor : public Control {
@@ -34,6 +34,10 @@ public:
 	void set_undo_redo(UndoRedo *undo_redo);
 	void set_voxel_node(VoxelNode *node);
 
+	// To be called when the number of inputs in a node changes.
+	// Rebuilds the node's internal controls, and updates GUI connections going to it from the graph.
+	void update_node_layout(uint32_t node_id);
+
 private:
 	void _notification(int p_what);
 	void _process(float delta);
@@ -45,16 +49,17 @@ private:
 	void set_node_position(int id, Vector2 offset);
 
 	void schedule_preview_update();
-	void update_previews();
+	void update_previews(bool with_live_update);
 	void update_slice_previews();
 	void update_range_analysis_previews();
 	void update_range_analysis_gizmo();
 	void clear_range_analysis_tooltips();
+	void hide_profiling_ratios();
 
 	void _on_graph_edit_gui_input(Ref<InputEvent> event);
 	void _on_graph_edit_connection_request(String from_node_name, int from_slot, String to_node_name, int to_slot);
 	void _on_graph_edit_disconnection_request(String from_node_name, int from_slot, String to_node_name, int to_slot);
-	void _on_graph_edit_delete_nodes_request();
+	void _on_graph_edit_delete_nodes_request(TypedArray<StringName> node_names);
 	void _on_graph_edit_node_selected(Node *p_node);
 	void _on_graph_edit_node_deselected(Node *p_node);
 	void _on_graph_node_dragged(Vector2 from, Vector2 to, int id);
@@ -67,6 +72,8 @@ private:
 	void _on_range_analysis_toggled(bool enabled);
 	void _on_range_analysis_area_changed();
 	void _on_preview_axes_menu_id_pressed(int id);
+	void _on_generate_shader_button_pressed();
+	void _on_live_update_toggled(bool enabled);
 
 	void _check_nothing_selected();
 
@@ -83,8 +90,11 @@ private:
 	Vector2 _click_position;
 	bool _nothing_selected_check_scheduled = false;
 	float _time_before_preview_update = 0.f;
-	Node3D *_voxel_node = nullptr;
+	VoxelNode *_voxel_node = nullptr;
 	DebugRenderer _debug_renderer;
+	VoxelGraphEditorShaderDialog *_shader_dialog = nullptr;
+	bool _live_update_enabled = false;
+	uint64_t _last_output_graph_hash = 0;
 
 	enum PreviewAxes { //
 		PREVIEW_XY = 0,

@@ -2,8 +2,10 @@
 #include "../meshers/blocky/voxel_mesher_blocky.h"
 #include "../meshers/cubes/voxel_mesher_cubes.h"
 #include "../storage/voxel_buffer_gd.h"
-#include "../terrain/voxel_terrain.h"
+#include "../storage/voxel_metadata_variant.h"
+#include "../terrain/fixed_lod/voxel_terrain.h"
 #include "../util/godot/funcs.h"
+#include "../util/math/conv.h"
 #include "../util/voxel_raycast.h"
 
 namespace zylann::voxel {
@@ -29,8 +31,8 @@ Ref<VoxelRaycastResult> VoxelToolTerrain::raycast(
 	struct RaycastPredicateColor {
 		const VoxelDataMap &map;
 
-		bool operator()(const Vector3i pos) const {
-			const uint64_t v = map.get_voxel(pos, VoxelBufferInternal::CHANNEL_COLOR);
+		bool operator()(const VoxelRaycastState &rs) const {
+			const uint64_t v = map.get_voxel(rs.hit_position, VoxelBufferInternal::CHANNEL_COLOR);
 			return v != 0;
 		}
 	};
@@ -38,8 +40,8 @@ Ref<VoxelRaycastResult> VoxelToolTerrain::raycast(
 	struct RaycastPredicateSDF {
 		const VoxelDataMap &map;
 
-		bool operator()(const Vector3i pos) const {
-			const float v = map.get_voxel_f(pos, VoxelBufferInternal::CHANNEL_SDF);
+		bool operator()(const VoxelRaycastState &rs) const {
+			const float v = map.get_voxel_f(rs.hit_position, VoxelBufferInternal::CHANNEL_SDF);
 			return v < 0;
 		}
 	};
@@ -49,8 +51,8 @@ Ref<VoxelRaycastResult> VoxelToolTerrain::raycast(
 		const VoxelBlockyLibrary &library;
 		const uint32_t collision_mask;
 
-		bool operator()(const Vector3i pos) const {
-			const int v = map.get_voxel(pos, VoxelBufferInternal::CHANNEL_TYPE);
+		bool operator()(const VoxelRaycastState &rs) const {
+			const int v = map.get_voxel(rs.hit_position, VoxelBufferInternal::CHANNEL_TYPE);
 
 			if (library.has_voxel(v) == false) {
 				return false;
@@ -89,7 +91,7 @@ Ref<VoxelRaycastResult> VoxelToolTerrain::raycast(
 	const Transform3D to_local = to_world.affine_inverse();
 	const Vector3 local_pos = to_local.xform(p_pos);
 	const Vector3 local_dir = to_local.basis.xform(p_dir).normalized();
-	const float to_world_scale = to_world.basis.get_axis(0).length();
+	const float to_world_scale = to_world.basis.get_column(Vector3::AXIS_X).length();
 	const float max_distance = p_max_distance / to_world_scale;
 
 	if (try_get_as(_terrain->get_mesher(), mesher_blocky)) {
@@ -164,13 +166,13 @@ void VoxelToolTerrain::do_sphere(Vector3 center, float radius) {
 		return;
 	}
 
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
-	const Box3i box(Vector3iUtil::from_floored(center) - Vector3iUtil::create(Math::floor(radius)),
+	const Box3i box(math::floor_to_int(center) - Vector3iUtil::create(Math::floor(radius)),
 			Vector3iUtil::create(Math::ceil(radius) * 2));
 
 	if (!is_area_editable(box)) {
-		PRINT_VERBOSE("Area not editable");
+		ZN_PRINT_VERBOSE("Area not editable");
 		return;
 	}
 
@@ -210,8 +212,12 @@ void VoxelToolTerrain::set_voxel_metadata(Vector3i pos, Variant meta) {
 	VoxelDataMap &map = _terrain->get_storage();
 	VoxelDataBlock *block = map.get_block(map.voxel_to_block(pos));
 	ERR_FAIL_COND_MSG(block == nullptr, "Area not editable");
+	// TODO In this situation, the generator would need to be invoked to fill in the blank
+	ERR_FAIL_COND_MSG(!block->has_voxels(), "Area not cached");
 	RWLockWrite lock(block->get_voxels().get_lock());
-	block->get_voxels().set_voxel_metadata(map.to_local(pos), meta);
+	VoxelMetadata *meta_storage = block->get_voxels().get_or_create_voxel_metadata(map.to_local(pos));
+	ERR_FAIL_COND(meta_storage == nullptr);
+	gd::set_as_variant(*meta_storage, meta);
 }
 
 Variant VoxelToolTerrain::get_voxel_metadata(Vector3i pos) const {
@@ -219,8 +225,14 @@ Variant VoxelToolTerrain::get_voxel_metadata(Vector3i pos) const {
 	VoxelDataMap &map = _terrain->get_storage();
 	VoxelDataBlock *block = map.get_block(map.voxel_to_block(pos));
 	ERR_FAIL_COND_V_MSG(block == nullptr, Variant(), "Area not editable");
+	// TODO In this situation, the generator would need to be invoked to fill in the blank
+	ERR_FAIL_COND_V_MSG(!block->has_voxels(), Variant(), "Area not cached");
 	RWLockRead lock(block->get_voxels().get_lock());
-	return block->get_voxels_const().get_voxel_metadata(map.to_local(pos));
+	const VoxelMetadata *meta = block->get_voxels_const().get_voxel_metadata(map.to_local(pos));
+	if (meta == nullptr) {
+		return Variant();
+	}
+	return gd::get_as_variant(*meta);
 }
 
 void VoxelToolTerrain::run_blocky_random_tick_static(VoxelDataMap &map, Box3i voxel_box, const VoxelBlockyLibrary &lib,
@@ -265,7 +277,8 @@ void VoxelToolTerrain::run_blocky_random_tick_static(VoxelDataMap &map, Box3i vo
 		const Vector3i block_origin = map.block_to_voxel(block_pos);
 
 		VoxelDataBlock *block = map.get_block(block_pos);
-		if (block != nullptr) {
+
+		if (block != nullptr && block->has_voxels()) {
 			// Doing ONLY reads here.
 			{
 				RWLockRead lock(block->get_voxels().get_lock());
@@ -317,16 +330,24 @@ void VoxelToolTerrain::run_blocky_random_tick_static(VoxelDataMap &map, Box3i vo
 	}
 }
 
+static Ref<VoxelBlockyLibrary> get_voxel_library(const VoxelTerrain &terrain) {
+	Ref<VoxelMesherBlocky> blocky_mesher = terrain.get_mesher();
+	if (blocky_mesher.is_valid()) {
+		return blocky_mesher->get_library();
+	}
+	return Ref<VoxelBlockyLibrary>();
+}
+
 // TODO This function snaps the given AABB to blocks, this is not intuitive. Should figure out a way to respect the
 // area. Executes a function on random voxels in the provided area, using the type channel. This allows to implement
 // slow "natural" cellular automata behavior, as can be seen in Minecraft.
 void VoxelToolTerrain::run_blocky_random_tick(
 		AABB voxel_area, int voxel_count, const Callable &callback, int batch_count) const {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	ERR_FAIL_COND(_terrain == nullptr);
-	ERR_FAIL_COND_MSG(
-			_terrain->get_voxel_library().is_null(), "This function requires a volume using VoxelMesherBlocky");
+	ERR_FAIL_COND_MSG(get_voxel_library(*_terrain).is_null(),
+			String("This function requires a volume using {0}").format(varray(VoxelMesherBlocky::get_class_static())));
 	ERR_FAIL_COND(callback.is_null());
 	ERR_FAIL_COND(batch_count <= 0);
 	ERR_FAIL_COND(voxel_count < 0);
@@ -341,9 +362,9 @@ void VoxelToolTerrain::run_blocky_random_tick(
 	};
 	CallbackData cb_self{ callback };
 
-	const VoxelBlockyLibrary &lib = **_terrain->get_voxel_library();
+	const VoxelBlockyLibrary &lib = **get_voxel_library(*_terrain);
 	VoxelDataMap &map = _terrain->get_storage();
-	const Box3i voxel_box(Vector3iUtil::from_floored(voxel_area.position), Vector3iUtil::from_floored(voxel_area.size));
+	const Box3i voxel_box(math::floor_to_int(voxel_area.position), math::floor_to_int(voxel_area.size));
 
 	run_blocky_random_tick_static(
 			map, voxel_box, lib, voxel_count, batch_count, &cb_self, [](void *self, Vector3i pos, int64_t val) {
@@ -369,8 +390,7 @@ void VoxelToolTerrain::for_each_voxel_metadata_in_area(AABB voxel_area, const Ca
 	ERR_FAIL_COND(callback.is_null());
 	ERR_FAIL_COND(!math::is_valid_size(voxel_area.size));
 
-	const Box3i voxel_box =
-			Box3i(Vector3iUtil::from_floored(voxel_area.position), Vector3iUtil::from_floored(voxel_area.size));
+	const Box3i voxel_box = Box3i(math::floor_to_int(voxel_area.position), math::floor_to_int(voxel_area.size));
 	ERR_FAIL_COND(!is_area_editable(voxel_box));
 
 	const Box3i data_block_box = voxel_box.downscaled(_terrain->get_data_block_size());
@@ -380,7 +400,7 @@ void VoxelToolTerrain::for_each_voxel_metadata_in_area(AABB voxel_area, const Ca
 	data_block_box.for_each_cell([&map, &callback, voxel_box](Vector3i block_pos) {
 		VoxelDataBlock *block = map.get_block(block_pos);
 
-		if (block == nullptr) {
+		if (block == nullptr || !block->has_voxels()) {
 			return;
 		}
 
@@ -389,9 +409,10 @@ void VoxelToolTerrain::for_each_voxel_metadata_in_area(AABB voxel_area, const Ca
 		// TODO Worth it locking blocks for metadata?
 
 		block->get_voxels().for_each_voxel_metadata_in_area(
-				rel_voxel_box, [&callback, block_origin](Vector3i rel_pos, Variant meta) {
+				rel_voxel_box, [&callback, block_origin](Vector3i rel_pos, const VoxelMetadata &meta) {
+					Variant v = gd::get_as_variant(meta);
 					const Variant key = rel_pos + block_origin;
-					const Variant *args[2] = { &key, &meta };
+					const Variant *args[2] = { &key, &v };
 					Callable::CallError err;
 					Variant retval; // We don't care about the return value, Callable API requires it
 					callback.call(args, 2, retval, err);

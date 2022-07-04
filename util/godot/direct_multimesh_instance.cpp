@@ -59,7 +59,7 @@ Ref<MultiMesh> DirectMultiMeshInstance::get_multimesh() const {
 }
 
 void DirectMultiMeshInstance::set_transform(Transform3D world_transform) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(!_multimesh_instance.is_valid());
 	RenderingServer &vs = *RenderingServer::get_singleton();
 	vs.instance_set_transform(_multimesh_instance, world_transform);
@@ -88,25 +88,25 @@ void DirectMultiMeshInstance::set_cast_shadows_setting(RenderingServer::ShadowCa
 }
 
 inline void write_bulk_array_transform(float *dst, const Transform3D &t) {
-	dst[0] = t.basis.elements[0].x;
-	dst[1] = t.basis.elements[0].y;
-	dst[2] = t.basis.elements[0].z;
+	dst[0] = t.basis.rows[0].x;
+	dst[1] = t.basis.rows[0].y;
+	dst[2] = t.basis.rows[0].z;
 	dst[3] = t.origin.x;
 
-	dst[4] = t.basis.elements[1].x;
-	dst[5] = t.basis.elements[1].y;
-	dst[6] = t.basis.elements[1].z;
+	dst[4] = t.basis.rows[1].x;
+	dst[5] = t.basis.rows[1].y;
+	dst[6] = t.basis.rows[1].z;
 	dst[7] = t.origin.y;
 
-	dst[8] = t.basis.elements[2].x;
-	dst[9] = t.basis.elements[2].y;
-	dst[10] = t.basis.elements[2].z;
+	dst[8] = t.basis.rows[2].x;
+	dst[9] = t.basis.rows[2].y;
+	dst[10] = t.basis.rows[2].z;
 	dst[11] = t.origin.z;
 }
 
 void DirectMultiMeshInstance::make_transform_3d_bulk_array(
 		Span<const Transform3D> transforms, PackedFloat32Array &bulk_array) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	const int item_size = 12; // In number of floats
 
@@ -130,7 +130,7 @@ void DirectMultiMeshInstance::make_transform_3d_bulk_array(
 
 void DirectMultiMeshInstance::make_transform_and_color8_3d_bulk_array(
 		Span<const TransformAndColor8> data, PackedFloat32Array &bulk_array) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	const int transform_size = 12; // In number of floats
 	const int item_size = transform_size + sizeof(Color8) / sizeof(float);
@@ -154,7 +154,7 @@ void DirectMultiMeshInstance::make_transform_and_color8_3d_bulk_array(
 
 void DirectMultiMeshInstance::make_transform_and_color32_3d_bulk_array(
 		Span<const TransformAndColor32> data, PackedFloat32Array &bulk_array) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	const int transform_size = 12; // In number of floats
 	const int item_size = transform_size + sizeof(Color) / sizeof(float);

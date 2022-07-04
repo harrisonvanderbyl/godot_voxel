@@ -1,8 +1,12 @@
-#ifndef EDITION_FUNCS_H
-#define EDITION_FUNCS_H
+#ifndef VOXEL_EDITION_FUNCS_H
+#define VOXEL_EDITION_FUNCS_H
 
 #include "../storage/funcs.h"
 #include "../util/fixed_array.h"
+#include "../util/math/conv.h"
+#include "../util/math/sdf.h"
+
+#include <core/math/transform_3d.h>
 
 namespace zylann::voxel {
 
@@ -56,7 +60,7 @@ inline void normalize_weights_preserving(FixedArray<float, 4> &weights, unsigned
 inline void blend_texture_packed_u16(
 		int texture_index, float target_weight, uint16_t &encoded_indices, uint16_t &encoded_weights) {
 #ifdef DEBUG_ENABLED
-	ERR_FAIL_COND(target_weight < 0.f || target_weight > 1.f);
+	ZN_ASSERT_RETURN(target_weight >= 0.f && target_weight <= 1.f);
 #endif
 
 	FixedArray<uint8_t, 4> indices = decode_indices_from_packed_u16(encoded_indices);
@@ -108,6 +112,122 @@ inline void blend_texture_packed_u16(
 	}
 }
 
+// Interpolates values from a 3D grid at a given position, using trilinear interpolation.
+// If the position is outside the grid, values are clamped.
+inline float interpolate_trilinear(Span<const float> grid, const Vector3i res, const Vector3f pos) {
+	const Vector3f pfi = math::floor(pos - Vector3f(0.5f));
+	// TODO Clamp pf too somehow?
+	const Vector3f pf = pos - pfi;
+	const Vector3i max_pos = math::max(res - Vector3i(2, 2, 2), Vector3i());
+	const Vector3i pi = math::clamp(Vector3i(pfi.x, pfi.y, pfi.z), Vector3i(), max_pos);
+
+	const unsigned int n010 = 1;
+	const unsigned int n100 = res.y;
+	const unsigned int n001 = res.y * res.x;
+
+	const unsigned int i000 = pi.x * n100 + pi.y * n010 + pi.z * n001;
+	const unsigned int i010 = i000 + n010;
+	const unsigned int i100 = i000 + n100;
+	const unsigned int i001 = i000 + n001;
+	const unsigned int i110 = i010 + n100;
+	const unsigned int i011 = i010 + n001;
+	const unsigned int i101 = i100 + n001;
+	const unsigned int i111 = i110 + n001;
+
+	return math::interpolate_trilinear(
+			grid[i000], grid[i100], grid[i101], grid[i001], grid[i010], grid[i110], grid[i111], grid[i011], pf);
+}
+
 } // namespace zylann::voxel
 
-#endif // EDITION_FUNCS_H
+namespace zylann::voxel::ops {
+
+template <typename Op, typename Shape>
+struct SdfOperation16bit {
+	Op op;
+	Shape shape;
+	inline int16_t operator()(Vector3i pos, int16_t sdf) const {
+		return snorm_to_s16(op(s16_to_snorm(sdf), shape(Vector3(pos))));
+	}
+};
+
+struct SdfUnion {
+	inline real_t operator()(real_t a, real_t b) const {
+		return zylann::math::sdf_union(a, b);
+	}
+};
+
+struct SdfSubtract {
+	inline real_t operator()(real_t a, real_t b) const {
+		return zylann::math::sdf_subtract(a, b);
+	}
+};
+
+struct SdfSet {
+	inline real_t operator()(real_t a, real_t b) const {
+		return b;
+	}
+};
+
+struct SdfSphere {
+	Vector3 center;
+	real_t radius;
+	real_t scale;
+
+	inline real_t operator()(Vector3 pos) const {
+		return scale * zylann::math::sdf_sphere(pos, center, radius);
+	}
+};
+
+struct SdfBufferShape {
+	Span<const float> buffer;
+	Vector3i buffer_size;
+	Transform3D world_to_buffer;
+	float isolevel;
+	float sdf_scale;
+
+	inline real_t operator()(const Vector3 &wpos) const {
+		// Transform terrain-space position to buffer-space
+		const Vector3f lpos = to_vec3f(world_to_buffer.xform(wpos));
+		if (lpos.x < 0 || lpos.y < 0 || lpos.z < 0 || lpos.x >= buffer_size.x || lpos.y >= buffer_size.y ||
+				lpos.z >= buffer_size.z) {
+			// Outside the buffer
+			return 100;
+		}
+		return interpolate_trilinear(buffer, buffer_size, lpos) * sdf_scale - isolevel;
+	}
+};
+
+struct TextureParams {
+	float opacity = 1.f;
+	float sharpness = 2.f;
+	unsigned int index = 0;
+};
+
+struct TextureBlendSphereOp {
+	Vector3 center;
+	float radius;
+	float radius_squared;
+	TextureParams tp;
+
+	TextureBlendSphereOp(Vector3 p_center, float p_radius, TextureParams p_tp) {
+		center = p_center;
+		radius = p_radius;
+		radius_squared = p_radius * p_radius;
+		tp = p_tp;
+	}
+
+	inline void operator()(Vector3i pos, uint16_t &indices, uint16_t &weights) const {
+		const float distance_squared = Vector3(pos).distance_squared_to(center);
+		if (distance_squared < radius_squared) {
+			const float distance_from_radius = radius - Math::sqrt(distance_squared);
+			const float target_weight =
+					tp.opacity * math::clamp(tp.sharpness * (distance_from_radius / radius), 0.f, 1.f);
+			blend_texture_packed_u16(tp.index, target_weight, indices, weights);
+		}
+	}
+};
+
+}; // namespace zylann::voxel::ops
+
+#endif // VOXEL_EDITION_FUNCS_H

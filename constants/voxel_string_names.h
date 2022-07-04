@@ -10,10 +10,7 @@ private:
 	static VoxelStringNames *g_singleton;
 
 public:
-	inline static VoxelStringNames *get_singleton() {
-		return g_singleton;
-	}
-
+	static const VoxelStringNames &get_singleton();
 	static void create_singleton();
 	static void destroy_singleton();
 
@@ -35,6 +32,10 @@ public:
 	StringName u_transition_mask;
 	StringName u_block_local_transform;
 	StringName u_lod_fade;
+
+#ifdef DEBUG_ENABLED
+	StringName _voxel_debug_vt_position;
+#endif
 };
 
 } // namespace zylann::voxel

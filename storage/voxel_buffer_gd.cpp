@@ -1,6 +1,9 @@
 #include "voxel_buffer_gd.h"
 #include "../edition/voxel_tool_buffer.h"
-#include "../util/godot/funcs.h"
+#include "../util/dstack.h"
+#include "../util/math/color.h"
+#include "../util/memory.h"
+#include "voxel_metadata_variant.h"
 
 #include <core/io/image.h>
 
@@ -11,7 +14,7 @@ static thread_local bool s_create_shared = false;
 
 VoxelBuffer::VoxelBuffer() {
 	if (!s_create_shared) {
-		_buffer = gd_make_shared<VoxelBufferInternal>();
+		_buffer = make_shared_instance<VoxelBufferInternal>();
 	}
 }
 
@@ -40,26 +43,31 @@ real_t VoxelBuffer::get_voxel_f(int x, int y, int z, unsigned int channel_index)
 }
 
 void VoxelBuffer::set_voxel_f(real_t value, int x, int y, int z, unsigned int channel_index) {
+	ZN_DSTACK();
 	return _buffer->set_voxel_f(value, x, y, z, channel_index);
 }
 
 void VoxelBuffer::copy_channel_from(Ref<VoxelBuffer> other, unsigned int channel) {
+	ZN_DSTACK();
 	ERR_FAIL_COND(other.is_null());
 	_buffer->copy_from(other->get_buffer(), channel);
 }
 
 void VoxelBuffer::copy_channel_from_area(
 		Ref<VoxelBuffer> other, Vector3i src_min, Vector3i src_max, Vector3i dst_min, unsigned int channel) {
+	ZN_DSTACK();
 	ERR_FAIL_COND(other.is_null());
 	_buffer->copy_from(other->get_buffer(), src_min, src_max, dst_min, channel);
 }
 
 void VoxelBuffer::fill(uint64_t defval, unsigned int channel_index) {
+	ZN_DSTACK();
 	ERR_FAIL_INDEX(channel_index, MAX_CHANNELS);
 	_buffer->fill(defval, channel_index);
 }
 
 void VoxelBuffer::fill_f(real_t value, unsigned int channel) {
+	ZN_DSTACK();
 	ERR_FAIL_INDEX(channel, MAX_CHANNELS);
 	_buffer->fill_f(value, channel);
 }
@@ -79,6 +87,7 @@ VoxelBuffer::Compression VoxelBuffer::get_channel_compression(unsigned int chann
 }
 
 void VoxelBuffer::downscale_to(Ref<VoxelBuffer> dst, Vector3i src_min, Vector3i src_max, Vector3i dst_min) const {
+	ZN_DSTACK();
 	ERR_FAIL_COND(dst.is_null());
 	_buffer->downscale_to(dst->get_buffer(), src_min, src_max, dst_min);
 }
@@ -105,18 +114,75 @@ VoxelBuffer::Depth VoxelBuffer::get_channel_depth(unsigned int channel_index) co
 	return VoxelBuffer::Depth(_buffer->get_channel_depth(channel_index));
 }
 
+Variant VoxelBuffer::get_block_metadata() const {
+	return get_as_variant(_buffer->get_block_metadata());
+}
+
 void VoxelBuffer::set_block_metadata(Variant meta) {
-	_buffer->set_block_metadata(meta);
+	set_as_variant(_buffer->get_block_metadata(), meta);
+}
+
+Variant VoxelBuffer::get_voxel_metadata(Vector3i pos) const {
+	VoxelMetadata *meta = _buffer->get_voxel_metadata(pos);
+	if (meta == nullptr) {
+		return Variant();
+	}
+	return get_as_variant(*meta);
+}
+
+void VoxelBuffer::set_voxel_metadata(Vector3i pos, Variant meta) {
+	if (meta.get_type() == Variant::NIL) {
+		_buffer->erase_voxel_metadata(pos);
+	} else {
+		VoxelMetadata *mv = _buffer->get_or_create_voxel_metadata(pos);
+		ZN_ASSERT_RETURN(mv != nullptr);
+		set_as_variant(*mv, meta);
+	}
 }
 
 void VoxelBuffer::for_each_voxel_metadata(const Callable &callback) const {
 	ERR_FAIL_COND(callback.is_null());
-	_buffer->for_each_voxel_metadata(callback);
+	//_buffer->for_each_voxel_metadata(callback);
+
+	const FlatMapMoveOnly<Vector3i, VoxelMetadata> &metadata = _buffer->get_voxel_metadata();
+
+	for (auto it = metadata.begin(); it != metadata.end(); ++it) {
+		Variant v = get_as_variant(it->value);
+		const Variant key = it->key;
+		const Variant *args[2] = { &key, &v };
+		Callable::CallError err;
+		Variant retval; // We don't care about the return value, Callable API requires it
+		callback.call(args, 2, retval, err);
+
+		ERR_FAIL_COND_MSG(
+				err.error != Callable::CallError::CALL_OK, String("Callable failed at {0}").format(varray(key)));
+
+		// TODO Can't provide detailed error because FuncRef doesn't give us access to the object
+		// ERR_FAIL_COND_MSG(err.error != Variant::CallError::CALL_OK, false,
+		// 		Variant::get_call_error_text(callback->get_object(), method_name, nullptr, 0, err));
+	}
 }
 
 void VoxelBuffer::for_each_voxel_metadata_in_area(const Callable &callback, Vector3i min_pos, Vector3i max_pos) {
 	ERR_FAIL_COND(callback.is_null());
-	_buffer->for_each_voxel_metadata_in_area(callback, Box3i::from_min_max(min_pos, max_pos));
+
+	const Box3i box = Box3i::from_min_max(min_pos, max_pos);
+
+	_buffer->for_each_voxel_metadata_in_area(box, [&callback](Vector3i rel_pos, const VoxelMetadata &meta) {
+		Variant v = get_as_variant(meta);
+		const Variant key = rel_pos;
+		const Variant *args[2] = { &key, &v };
+		Callable::CallError err;
+		Variant retval; // We don't care about the return value, Callable API requires it
+		callback.call(args, 2, retval, err);
+
+		ERR_FAIL_COND_MSG(
+				err.error != Callable::CallError::CALL_OK, String("Callable failed at {0}").format(varray(key)));
+
+		// TODO Can't provide detailed error because FuncRef doesn't give us access to the object
+		// ERR_FAIL_COND_MSG(err.error != Variant::CallError::CALL_OK, false,
+		// 		Variant::get_call_error_text(callback->get_object(), method_name, nullptr, 0, err));
+	});
 }
 
 void VoxelBuffer::copy_voxel_metadata_in_area(
@@ -135,7 +201,70 @@ void VoxelBuffer::clear_voxel_metadata() {
 }
 
 Ref<Image> VoxelBuffer::debug_print_sdf_to_image_top_down() {
-	return _buffer->debug_print_sdf_to_image_top_down();
+	return debug_print_sdf_to_image_top_down(*_buffer);
+}
+
+Ref<Image> VoxelBuffer::debug_print_sdf_to_image_top_down(const VoxelBufferInternal &vb) {
+	Ref<Image> im;
+	im.instantiate();
+	const Vector3i size = vb.get_size();
+	im->create(size.x, size.z, false, Image::FORMAT_RGB8);
+	Vector3i pos;
+	for (pos.z = 0; pos.z < size.z; ++pos.z) {
+		for (pos.x = 0; pos.x < size.x; ++pos.x) {
+			for (pos.y = size.y - 1; pos.y >= 0; --pos.y) {
+				float v = vb.get_voxel_f(pos.x, pos.y, pos.z, VoxelBufferInternal::CHANNEL_SDF);
+				if (v < 0.0) {
+					break;
+				}
+			}
+			float h = pos.y;
+			float c = h / size.y;
+			im->set_pixel(pos.x, pos.z, Color(c, c, c));
+		}
+	}
+	return im;
+}
+
+Ref<Image> VoxelBuffer::debug_print_sdf_y_slice(float scale, int y) const {
+	const VoxelBufferInternal &buffer = *_buffer;
+	const Vector3i res = buffer.get_size();
+	ERR_FAIL_COND_V(y < 0 || y >= res.y, Ref<Image>());
+
+	Ref<Image> im;
+	im.instantiate();
+	im->create(res.x, res.z, false, Image::FORMAT_RGB8);
+
+	const Color nega_col(0.5f, 0.5f, 1.0f);
+	const Color posi_col(1.0f, 0.6f, 0.1f);
+	const Color black(0.f, 0.f, 0.f);
+
+	for (int z = 0; z < res.z; ++z) {
+		for (int x = 0; x < res.x; ++x) {
+			const float sd = scale * buffer.get_voxel_f(x, y, z, VoxelBufferInternal::CHANNEL_SDF);
+
+			const float nega = math::clamp(-sd, 0.0f, 1.0f);
+			const float posi = math::clamp(sd, 0.0f, 1.0f);
+			const Color col = math::lerp(black, nega_col, nega) + math::lerp(black, posi_col, posi);
+
+			im->set_pixel(x, z, col);
+		}
+	}
+
+	return im;
+}
+
+Array VoxelBuffer::debug_print_sdf_y_slices(float scale) const {
+	Array images;
+
+	const VoxelBufferInternal &buffer = *_buffer;
+	const Vector3i res = buffer.get_size();
+
+	for (int y = 0; y < res.y; ++y) {
+		images.append(debug_print_sdf_y_slice(scale, y));
+	}
+
+	return images;
 }
 
 void VoxelBuffer::_b_deprecated_optimize() {
@@ -189,6 +318,7 @@ void VoxelBuffer::_bind_methods() {
 	ClassDB::bind_method(
 			D_METHOD("copy_voxel_metadata_in_area", "src_buffer", "src_min_pos", "src_max_pos", "dst_min_pos"),
 			&VoxelBuffer::copy_voxel_metadata_in_area);
+	ClassDB::bind_method(D_METHOD("debug_print_sdf_y_slices", "scale"), &VoxelBuffer::debug_print_sdf_y_slices);
 
 	BIND_ENUM_CONSTANT(CHANNEL_TYPE);
 	BIND_ENUM_CONSTANT(CHANNEL_SDF);

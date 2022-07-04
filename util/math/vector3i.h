@@ -1,11 +1,12 @@
-#ifndef VOXEL_VECTOR3I_H
-#define VOXEL_VECTOR3I_H
+#ifndef ZYLANN_VECTOR3I_H
+#define ZYLANN_VECTOR3I_H
 
-#include "../funcs.h"
 #include "funcs.h"
+
 #include <core/math/vector3.h>
+#include <core/math/vector3i.h>
 #include <core/templates/hashfuncs.h>
-#include <functional>
+#include <iosfwd>
 
 #if VOXEL_CUSTOM_VECTOR3I
 struct Vector3i {
@@ -268,7 +269,8 @@ _FORCE_INLINE_ int64_t Vector3i::distance_sq(const Vector3i &other) const {
 
 #else
 
-namespace zylann::Vector3iUtil {
+namespace zylann {
+namespace Vector3iUtil {
 
 constexpr int AXIS_COUNT = 3;
 
@@ -276,33 +278,17 @@ inline Vector3i create(int xyz) {
 	return Vector3i(xyz, xyz, xyz);
 }
 
-inline Vector3i from_floored(const Vector3 &f) {
-	return Vector3i(Math::floor(f.x), Math::floor(f.y), Math::floor(f.z));
-}
-
-inline Vector3i from_rounded(const Vector3 &f) {
-	return Vector3i(Math::round(f.x), Math::round(f.y), Math::round(f.z));
-}
-
-inline Vector3i from_ceiled(const Vector3 &f) {
-	return Vector3i(Math::ceil(f.x), Math::ceil(f.y), Math::ceil(f.z));
-}
-
-inline Vector3i from_cast(const Vector3 &f) {
-	return Vector3i(f.x, f.y, f.z);
-}
-
 inline void sort_min_max(Vector3i &a, Vector3i &b) {
-	zylann::sort(a.x, b.x);
-	zylann::sort(a.y, b.y);
-	zylann::sort(a.z, b.z);
+	math::sort(a.x, b.x);
+	math::sort(a.y, b.y);
+	math::sort(a.z, b.z);
 }
 
 // Returning a 64-bit integer because volumes can quickly overflow INT_MAX (like 1300^3),
 // even though dense volumes of that size will rarely be encountered in this module
 inline int64_t get_volume(const Vector3i &v) {
 #ifdef DEBUG_ENABLED
-	ERR_FAIL_COND_V(v.x < 0 || v.y < 0 || v.z < 0, 0);
+	ZN_ASSERT_RETURN_V(v.x >= 0 && v.y >= 0 && v.z > 0, 0);
 #endif
 	return v.x * v.y * v.z;
 }
@@ -319,23 +305,6 @@ inline Vector3i from_zxy_index(unsigned int i, const Vector3i area_size) {
 	return pos;
 }
 
-inline Vector3i floordiv(const Vector3i v, const Vector3i d) {
-	return Vector3i(
-			zylann::math::floordiv(v.x, d.x), zylann::math::floordiv(v.y, d.y), zylann::math::floordiv(v.z, d.z));
-}
-
-inline Vector3i floordiv(const Vector3i v, const int d) {
-	return Vector3i(zylann::math::floordiv(v.x, d), zylann::math::floordiv(v.y, d), zylann::math::floordiv(v.z, d));
-}
-
-inline Vector3i ceildiv(const Vector3i v, const int d) {
-	return Vector3i(zylann::math::ceildiv(v.x, d), zylann::math::ceildiv(v.y, d), zylann::math::ceildiv(v.z, d));
-}
-
-inline Vector3i wrap(const Vector3i v, const Vector3i d) {
-	return Vector3i(zylann::math::wrap(v.x, d.x), zylann::math::wrap(v.y, d.y), zylann::math::wrap(v.z, d.z));
-}
-
 inline bool all_members_equal(const Vector3i v) {
 	return v.x == v.y && v.y == v.z;
 }
@@ -344,27 +313,67 @@ inline bool is_unit_vector(const Vector3i v) {
 	return Math::abs(v.x) + Math::abs(v.y) + Math::abs(v.z) == 1;
 }
 
-} // namespace zylann::Vector3iUtil
+inline bool is_valid_size(const Vector3i &s) {
+	return s.x >= 0 && s.y >= 0 && s.z >= 0;
+}
+
+} // namespace Vector3iUtil
+
+namespace math {
+
+inline Vector3i floordiv(const Vector3i v, const Vector3i d) {
+	return Vector3i(math::floordiv(v.x, d.x), math::floordiv(v.y, d.y), math::floordiv(v.z, d.z));
+}
+
+inline Vector3i floordiv(const Vector3i v, const int d) {
+	return Vector3i(math::floordiv(v.x, d), math::floordiv(v.y, d), math::floordiv(v.z, d));
+}
+
+inline Vector3i ceildiv(const Vector3i v, const int d) {
+	return Vector3i(math::ceildiv(v.x, d), math::ceildiv(v.y, d), math::ceildiv(v.z, d));
+}
+
+inline Vector3i ceildiv(const Vector3i v, const Vector3i d) {
+	return Vector3i(math::ceildiv(v.x, d.x), math::ceildiv(v.y, d.y), math::ceildiv(v.z, d.z));
+}
+
+inline Vector3i wrap(const Vector3i v, const Vector3i d) {
+	return Vector3i(math::wrap(v.x, d.x), math::wrap(v.y, d.y), math::wrap(v.z, d.z));
+}
+
+inline Vector3i clamp(const Vector3i a, const Vector3i minv, const Vector3i maxv) {
+	return Vector3i(
+			math::clamp(a.x, minv.x, maxv.x), math::clamp(a.y, minv.y, maxv.y), math::clamp(a.z, minv.z, maxv.z));
+}
+
+} // namespace math
+} // namespace zylann
 
 inline Vector3i operator<<(const Vector3i &a, int b) {
 #ifdef DEBUG_ENABLED
-	CRASH_COND(b < 0);
+	ZN_ASSERT(b >= 0);
 #endif
 	return Vector3i(a.x << b, a.y << b, a.z << b);
 }
 
 inline Vector3i operator>>(const Vector3i &a, int b) {
 #ifdef DEBUG_ENABLED
-	CRASH_COND(b < 0);
+	ZN_ASSERT(b >= 0);
 #endif
 	return Vector3i(a.x >> b, a.y >> b, a.z >> b);
 }
 
+inline Vector3i operator&(const Vector3i &a, uint32_t b) {
+	return Vector3i(a.x & b, a.y & b, a.z & b);
+}
+
 #endif // VOXEL_CUSTOM_VECTOR3I
+
+std::stringstream &operator<<(std::stringstream &ss, const Vector3i &v);
 
 // For Godot
 struct Vector3iHasher {
-	static _FORCE_INLINE_ uint32_t hash(const Vector3i &v) {
+	static inline uint32_t hash(const Vector3i &v) {
 		uint32_t hash = hash_djb2_one_32(v.x);
 		hash = hash_djb2_one_32(v.y, hash);
 		return hash_djb2_one_32(v.z, hash);
@@ -381,4 +390,4 @@ struct hash<Vector3i> {
 };
 } // namespace std
 
-#endif // VOXEL_VECTOR3I_H
+#endif // ZYLANN_VECTOR3I_H

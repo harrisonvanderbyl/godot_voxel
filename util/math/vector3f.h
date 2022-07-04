@@ -1,8 +1,9 @@
 #ifndef ZYLANN_VECTOR3F_H
 #define ZYLANN_VECTOR3F_H
 
-#include <core/error/error_macros.h>
-#include <core/math/math_funcs.h>
+#include "../errors.h"
+#include "funcs.h"
+#include <iosfwd>
 
 namespace zylann {
 
@@ -26,60 +27,23 @@ struct Vector3f {
 	};
 
 	Vector3f() : x(0), y(0), z(0) {}
+
+	// It is recommended to use `explicit` because otherwise it would open the door to plenty of implicit conversions
+	// which would make many cases ambiguous.
+	explicit Vector3f(float p_v) : x(p_v), y(p_v), z(p_v) {}
+
 	Vector3f(float p_x, float p_y, float p_z) : x(p_x), y(p_y), z(p_z) {}
-
-	inline float length_squared() const {
-		return x * x + y * y + z * z;
-	}
-
-	inline float length() const {
-		return Math::sqrt(length_squared());
-	}
-
-	inline float distance_squared_to(const Vector3f &p_to) const {
-		return (p_to - *this).length_squared();
-	}
-
-	inline Vector3f cross(const Vector3f &p_with) const {
-		const Vector3f ret( //
-				(y * p_with.z) - (z * p_with.y), //
-				(z * p_with.x) - (x * p_with.z), //
-				(x * p_with.y) - (y * p_with.x));
-		return ret;
-	}
-
-	inline float dot(const Vector3f &p_with) const {
-		return x * p_with.x + y * p_with.y + z * p_with.z;
-	}
-
-	inline void normalize() {
-		const float lengthsq = length_squared();
-		if (lengthsq == 0) {
-			x = y = z = 0;
-		} else {
-			const float length = Math::sqrt(lengthsq);
-			x /= length;
-			y /= length;
-			z /= length;
-		}
-	}
-
-	inline Vector3f normalized() const {
-		Vector3f v = *this;
-		v.normalize();
-		return v;
-	}
 
 	inline const float &operator[](const unsigned int p_axis) const {
 #ifdef DEBUG_ENABLED
-		CRASH_COND(p_axis >= AXIS_COUNT);
+		ZN_ASSERT(p_axis < AXIS_COUNT);
 #endif
 		return coords[p_axis];
 	}
 
 	inline float &operator[](const unsigned int p_axis) {
 #ifdef DEBUG_ENABLED
-		CRASH_COND(p_axis >= AXIS_COUNT);
+		ZN_ASSERT(p_axis < AXIS_COUNT);
 #endif
 		return coords[p_axis];
 	}
@@ -176,6 +140,79 @@ struct Vector3f {
 inline Vector3f operator*(float p_scalar, const Vector3f &v) {
 	return v * p_scalar;
 }
+
+namespace math {
+
+inline Vector3f min(const Vector3f a, const Vector3f b) {
+	return Vector3f(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z));
+}
+
+inline Vector3f max(const Vector3f a, const Vector3f b) {
+	return Vector3f(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z));
+}
+
+inline Vector3f floor(const Vector3f a) {
+	return Vector3f(Math::floor(a.x), Math::floor(a.y), Math::floor(a.z));
+}
+
+inline Vector3f ceil(const Vector3f a) {
+	return Vector3f(Math::ceil(a.x), Math::ceil(a.y), Math::ceil(a.z));
+}
+
+inline Vector3f lerp(const Vector3f a, const Vector3f b, const float t) {
+	return Vector3f(Math::lerp(a.x, b.x, t), Math::lerp(a.y, b.y, t), Math::lerp(a.z, b.z, t));
+}
+
+inline bool has_nan(const Vector3f &v) {
+	return Math::is_nan(v.x) || Math::is_nan(v.y) || Math::is_nan(v.z);
+}
+
+inline float length_squared(const Vector3f v) {
+	return v.x * v.x + v.y * v.y + v.z * v.z;
+}
+
+inline float length(const Vector3f &v) {
+	return Math::sqrt(length_squared(v));
+}
+
+inline float distance_squared(const Vector3f &a, const Vector3f &b) {
+	return length_squared(b - a);
+}
+
+inline Vector3f cross(const Vector3f &a, const Vector3f &b) {
+	const Vector3f ret( //
+			(a.y * b.z) - (a.z * b.y), //
+			(a.z * b.x) - (a.x * b.z), //
+			(a.x * b.y) - (a.y * b.x));
+	return ret;
+}
+
+inline float dot(const Vector3f &a, const Vector3f &b) {
+	return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+inline Vector3f normalized(const Vector3f &v) {
+	const float lengthsq = length_squared(v);
+	if (lengthsq == 0) {
+		return Vector3f();
+	} else {
+		const float length = Math::sqrt(lengthsq);
+		return v / length;
+	}
+}
+
+inline bool is_normalized(const Vector3f &v) {
+	// use length_squared() instead of length() to avoid sqrt(), makes it more stringent.
+	return Math::is_equal_approx(length_squared(v), 1, float(UNIT_EPSILON));
+}
+
+inline float distance(const Vector3f &a, const Vector3f &b) {
+	return Math::sqrt(distance_squared(a, b));
+}
+
+} // namespace math
+
+std::stringstream &operator<<(std::stringstream &ss, const Vector3f &v);
 
 } // namespace zylann
 

@@ -1,6 +1,5 @@
 #include "voxel_mesher_cubes.h"
 #include "../../storage/voxel_buffer_internal.h"
-#include "../../util/funcs.h"
 #include "../../util/godot/funcs.h"
 #include "../../util/profiling.h"
 #include <core/math/geometry_2d.h>
@@ -61,7 +60,7 @@ enum FaceSide {
 // 1 if alpha is neither zero neither max,
 // 2 if alpha is max
 inline uint8_t get_alpha_index(Color8 c) {
-	return (c.a == 0xf) + (c.a > 0);
+	return (c.a == 0xff) + (c.a > 0);
 }
 
 template <typename Voxel_T, typename Color_F>
@@ -84,7 +83,8 @@ void build_voxel_mesh_as_simple_cubes(
 	neighbor_offset_d_lut[Vector3i::AXIS_Y] = 1;
 	neighbor_offset_d_lut[Vector3i::AXIS_Z] = block_size.x * block_size.y;
 
-	FixedArray<uint32_t, VoxelMesherCubes::MATERIAL_COUNT> index_offsets(0);
+	FixedArray<uint32_t, VoxelMesherCubes::MATERIAL_COUNT> index_offsets;
+	fill(index_offsets, uint32_t(0));
 
 	// For each axis
 	for (unsigned int za = 0; za < Vector3iUtil::AXIS_COUNT; ++za) {
@@ -228,7 +228,8 @@ void build_voxel_mesh_as_greedy_cubes(
 	neighbor_offset_d_lut[Vector3i::AXIS_Y] = 1;
 	neighbor_offset_d_lut[Vector3i::AXIS_Z] = block_size.x * block_size.y;
 
-	FixedArray<uint32_t, VoxelMesherCubes::MATERIAL_COUNT> index_offsets(0);
+	FixedArray<uint32_t, VoxelMesherCubes::MATERIAL_COUNT> index_offsets;
+	fill(index_offsets, uint32_t(0));
 
 	// For each axis
 	for (unsigned int za = 0; za < Vector3iUtil::AXIS_COUNT; ++za) {
@@ -388,7 +389,7 @@ void build_voxel_mesh_as_greedy_cubes_atlased(
 		VoxelMesherCubes::GreedyAtlasData &out_greedy_atlas_data, const Span<Voxel_T> voxel_buffer,
 		const Vector3i block_size, std::vector<uint8_t> &mask_memory_pool, Color_F color_func) {
 	//
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(block_size.x < static_cast<int>(2 * VoxelMesherCubes::PADDING) ||
 			block_size.y < static_cast<int>(2 * VoxelMesherCubes::PADDING) ||
 			block_size.z < static_cast<int>(2 * VoxelMesherCubes::PADDING));
@@ -419,7 +420,8 @@ void build_voxel_mesh_as_greedy_cubes_atlased(
 	neighbor_offset_d_lut[Vector3i::AXIS_Y] = 1;
 	neighbor_offset_d_lut[Vector3i::AXIS_Z] = block_size.x * block_size.y;
 
-	FixedArray<uint32_t, VoxelMesherCubes::MATERIAL_COUNT> index_offsets(0);
+	FixedArray<uint32_t, VoxelMesherCubes::MATERIAL_COUNT> index_offsets;
+	fill(index_offsets, uint32_t(0));
 
 	// For each axis
 	for (unsigned int za = 0; za < Vector3iUtil::AXIS_COUNT; ++za) {
@@ -615,13 +617,13 @@ Ref<Image> make_greedy_atlas(
 		const VoxelMesherCubes::GreedyAtlasData &atlas_data, Span<VoxelMesherCubes::Arrays> surfaces) {
 	//
 	ERR_FAIL_COND_V(atlas_data.images.size() == 0, Ref<Image>());
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	// Pack rectangles
 	Vector<Vector2i> result_points;
 	Vector2i result_size;
 	{
-		VOXEL_PROFILE_SCOPE_NAMED("Packing");
+		ZN_PROFILE_SCOPE_NAMED("Packing");
 		Vector<Vector2i> sizes;
 		sizes.resize(atlas_data.images.size());
 		for (unsigned int i = 0; i < atlas_data.images.size(); ++i) {
@@ -706,7 +708,7 @@ VoxelMesherCubes::VoxelMesherCubes() {
 VoxelMesherCubes::~VoxelMesherCubes() {}
 
 void VoxelMesherCubes::build(VoxelMesher::Output &output, const VoxelMesher::Input &input) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 	const int channel = VoxelBufferInternal::CHANNEL_COLOR;
 	Cache &cache = _cache;
 
@@ -895,8 +897,10 @@ void VoxelMesherCubes::build(VoxelMesher::Output &output, const VoxelMesher::Inp
 	for (unsigned int material_index = 0; material_index < MATERIAL_COUNT; ++material_index) {
 		const Arrays &arrays = cache.arrays_per_material[material_index];
 
+		Output::Surface surface;
+
 		if (arrays.positions.size() != 0) {
-			Array mesh_arrays;
+			Array &mesh_arrays = surface.arrays;
 			mesh_arrays.resize(Mesh::ARRAY_MAX);
 
 			{
@@ -924,12 +928,13 @@ void VoxelMesherCubes::build(VoxelMesher::Output &output, const VoxelMesher::Inp
 				}
 			}
 
-			output.surfaces.push_back(mesh_arrays);
-
-		} else {
-			// Empty
-			output.surfaces.push_back(Array());
+			//surface.collision_enabled = (material_index == MATERIAL_OPAQUE);
 		}
+		//  else {
+		// 	// Empty
+		// }
+
+		output.surfaces.push_back(surface);
 	}
 
 	output.primitive_type = Mesh::PRIMITIVE_TRIANGLES;
@@ -1003,6 +1008,31 @@ int VoxelMesherCubes::get_used_channels_mask() const {
 	return (1 << VoxelBufferInternal::CHANNEL_COLOR);
 }
 
+void VoxelMesherCubes::set_material_by_index(Materials id, Ref<Material> material) {
+	_materials[id] = material;
+}
+
+Ref<Material> VoxelMesherCubes::get_material_by_index(unsigned int i) const {
+	ERR_FAIL_INDEX_V(i, _materials.size(), Ref<Material>());
+	return _materials[i];
+}
+
+void VoxelMesherCubes::_b_set_opaque_material(Ref<Material> material) {
+	set_material_by_index(MATERIAL_OPAQUE, material);
+}
+
+Ref<Material> VoxelMesherCubes::_b_get_opaque_material() const {
+	return get_material_by_index(MATERIAL_OPAQUE);
+}
+
+void VoxelMesherCubes::_b_set_transparent_material(Ref<Material> material) {
+	set_material_by_index(MATERIAL_TRANSPARENT, material);
+}
+
+Ref<Material> VoxelMesherCubes::_b_get_transparent_material() const {
+	return get_material_by_index(MATERIAL_TRANSPARENT);
+}
+
 void VoxelMesherCubes::_bind_methods() {
 	ClassDB::bind_method(
 			D_METHOD("set_greedy_meshing_enabled", "enable"), &VoxelMesherCubes::set_greedy_meshing_enabled);
@@ -1014,12 +1044,28 @@ void VoxelMesherCubes::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_color_mode", "mode"), &VoxelMesherCubes::set_color_mode);
 	ClassDB::bind_method(D_METHOD("get_color_mode"), &VoxelMesherCubes::get_color_mode);
 
+	ClassDB::bind_method(D_METHOD("set_material_by_index", "id", "material"), &VoxelMesherCubes::set_material_by_index);
+
+	ClassDB::bind_method(D_METHOD("_get_opaque_material"), &VoxelMesherCubes::_b_get_opaque_material);
+	ClassDB::bind_method(D_METHOD("_set_opaque_material", "material"), &VoxelMesherCubes::_b_set_opaque_material);
+
+	ClassDB::bind_method(D_METHOD("_get_transparent_material"), &VoxelMesherCubes::_b_get_transparent_material);
+	ClassDB::bind_method(
+			D_METHOD("_set_transparent_material", "material"), &VoxelMesherCubes::_b_set_transparent_material);
+
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "greedy_meshing_enabled"), "set_greedy_meshing_enabled",
 			"is_greedy_meshing_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "color_mode"), "set_color_mode", "get_color_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "color_mode", PROPERTY_HINT_ENUM, "Raw,MesherPalette,ShaderPalette"),
+			"set_color_mode", "get_color_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "palette", PROPERTY_HINT_RESOURCE_TYPE,
 						 VoxelColorPalette::get_class_static()),
 			"set_palette", "get_palette");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::OBJECT, "opaque_material", PROPERTY_HINT_RESOURCE_TYPE, Material::get_class_static()),
+			"_set_opaque_material", "_get_opaque_material");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "transparent_material", PROPERTY_HINT_RESOURCE_TYPE,
+						 Material::get_class_static()),
+			"_set_transparent_material", "_get_transparent_material");
 
 	BIND_ENUM_CONSTANT(MATERIAL_OPAQUE);
 	BIND_ENUM_CONSTANT(MATERIAL_TRANSPARENT);

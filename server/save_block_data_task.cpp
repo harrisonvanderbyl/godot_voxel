@@ -1,7 +1,8 @@
 #include "save_block_data_task.h"
-#include "../util/godot/funcs.h"
-#include "../util/macros.h"
+#include "../storage/voxel_buffer_internal.h"
+#include "../util/log.h"
 #include "../util/profiling.h"
+#include "../util/string_funcs.h"
 #include "generate_block_task.h"
 #include "voxel_server.h"
 
@@ -26,7 +27,7 @@ SaveBlockDataTask::SaveBlockDataTask(uint32_t p_volume_id, Vector3i p_block_pos,
 }
 
 SaveBlockDataTask::SaveBlockDataTask(uint32_t p_volume_id, Vector3i p_block_pos, uint8_t p_lod, uint8_t p_block_size,
-		std::unique_ptr<InstanceBlockData> p_instances, std::shared_ptr<StreamingDependency> p_stream_dependency) :
+		UniquePtr<InstanceBlockData> p_instances, std::shared_ptr<StreamingDependency> p_stream_dependency) :
 		_instances(std::move(p_instances)),
 		_position(p_block_pos),
 		_volume_id(p_volume_id),
@@ -48,7 +49,7 @@ int SaveBlockDataTask::debug_get_running_count() {
 }
 
 void SaveBlockDataTask::run(zylann::ThreadedTaskContext ctx) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	CRASH_COND(_stream_dependency == nullptr);
 	Ref<VoxelStream> stream = _stream_dependency->stream;
@@ -75,8 +76,7 @@ void SaveBlockDataTask::run(zylann::ThreadedTaskContext ctx) {
 		// On the other hand, if we want to represent the fact that "everything was deleted here",
 		// this should not be null.
 
-		PRINT_VERBOSE(String("Saving instance block {0} lod {1} with data {2}")
-							  .format(varray(_position, _lod, ptr2s(_instances.get()))));
+		ZN_PRINT_VERBOSE(format("Saving instance block {} lod {} with data {}", _position, _lod, _instances.get()));
 
 		VoxelStream::InstancesQueryData instances_query{ std::move(_instances), _position, _lod };
 		stream->save_instance_blocks(Span<VoxelStream::InstancesQueryData>(&instances_query, 1));
@@ -94,7 +94,7 @@ bool SaveBlockDataTask::is_cancelled() {
 }
 
 void SaveBlockDataTask::apply_result() {
-	if (VoxelServer::get_singleton()->is_volume_valid(_volume_id)) {
+	if (VoxelServer::get_singleton().is_volume_valid(_volume_id)) {
 		if (_stream_dependency->valid) {
 			// TODO Perhaps separate save and load callbacks?
 			VoxelServer::BlockDataOutput o;
@@ -105,14 +105,14 @@ void SaveBlockDataTask::apply_result() {
 			o.initial_load = false; // Unused
 			o.type = VoxelServer::BlockDataOutput::TYPE_SAVED;
 
-			VoxelServer::VolumeCallbacks callbacks = VoxelServer::get_singleton()->get_volume_callbacks(_volume_id);
+			VoxelServer::VolumeCallbacks callbacks = VoxelServer::get_singleton().get_volume_callbacks(_volume_id);
 			CRASH_COND(callbacks.data_output_callback == nullptr);
 			callbacks.data_output_callback(callbacks.data, o);
 		}
 
 	} else {
 		// This can happen if the user removes the volume while requests are still about to return
-		PRINT_VERBOSE("Stream data request response came back but volume wasn't found");
+		ZN_PRINT_VERBOSE("Stream data request response came back but volume wasn't found");
 	}
 }
 

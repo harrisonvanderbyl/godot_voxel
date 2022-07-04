@@ -1,6 +1,9 @@
 Voxel block format
 ====================
 
+!!! warn
+    This document is about an old version of the format. You may check the most recent version.
+
 Version: 3
 
 This page describes the binary format used by default in this module to serialize voxel blocks to files, network or databases.

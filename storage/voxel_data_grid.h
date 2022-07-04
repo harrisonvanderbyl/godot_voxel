@@ -16,7 +16,9 @@ public:
 		_offset_in_blocks = blocks_box.pos;
 		blocks_box.for_each_cell_zxy([&map, this](const Vector3i pos) {
 			VoxelDataBlock *block = map.get_block(pos);
-			if (block != nullptr) {
+			// TODO Might need to invoke the generator at some level for present blocks without voxels,
+			// or make sure all blocks contain voxel data
+			if (block != nullptr && block->has_voxels()) {
 				set_block(pos, block->get_voxels_shared());
 			} else {
 				set_block(pos, nullptr);
@@ -41,6 +43,14 @@ public:
 							local_box, channel0, channel1, action, voxel_offset);
 				});
 	}
+
+	// inline const VoxelBufferInternal *get_block(Vector3i position) const {
+	// 	ERR_FAIL_COND_V(!is_valid_position(position), nullptr);
+	// 	position -= _offset_in_blocks;
+	// 	const unsigned int index = Vector3iUtil::get_zxy_index(position, _size_in_blocks);
+	// 	CRASH_COND(index >= _blocks.size());
+	// 	return _blocks[index].get();
+	// }
 
 private:
 	inline unsigned int get_block_size() const {
@@ -83,25 +93,29 @@ private:
 		_block_size = block_size;
 	}
 
-	inline bool is_valid_position(Vector3i pos) {
+	inline bool is_valid_position(Vector3i pos) const {
 		pos -= _offset_in_blocks;
-		return pos.x >= 0 && pos.y >= 0 && pos.z >= 0 && pos.x < _size_in_blocks.x && pos.y < _size_in_blocks.y &&
+		return pos.x >= 0 && //
+				pos.y >= 0 && //
+				pos.z >= 0 && //
+				pos.x < _size_in_blocks.x && //
+				pos.y < _size_in_blocks.y && //
 				pos.z < _size_in_blocks.z;
 	}
 
 	inline void set_block(Vector3i position, std::shared_ptr<VoxelBufferInternal> block) {
-		ERR_FAIL_COND(!is_valid_position(position));
+		ZN_ASSERT_RETURN(is_valid_position(position));
 		position -= _offset_in_blocks;
 		const unsigned int index = Vector3iUtil::get_zxy_index(position, _size_in_blocks);
-		CRASH_COND(index >= _blocks.size());
+		ZN_ASSERT(index < _blocks.size());
 		_blocks[index] = block;
 	}
 
 	inline VoxelBufferInternal *get_block(Vector3i position) {
-		ERR_FAIL_COND_V(!is_valid_position(position), nullptr);
+		ZN_ASSERT_RETURN_V(is_valid_position(position), nullptr);
 		position -= _offset_in_blocks;
 		const unsigned int index = Vector3iUtil::get_zxy_index(position, _size_in_blocks);
-		CRASH_COND(index >= _blocks.size());
+		ZN_ASSERT(index < _blocks.size());
 		return _blocks[index].get();
 	}
 

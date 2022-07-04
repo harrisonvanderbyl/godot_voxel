@@ -1,6 +1,8 @@
 #include "vox_data.h"
-#include "../util/macros.h"
+#include "../util/godot/funcs.h"
+#include "../util/log.h"
 #include "../util/profiling.h"
+#include "../util/string_funcs.h"
 
 #include <core/io/file_access.h>
 #include <core/variant/variant.h>
@@ -146,7 +148,7 @@ static Basis parse_basis(uint8_t data) {
 
 	Vector3i magica_x, magica_y, magica_z;
 	transpose(x, y, z, magica_x, magica_y, magica_z);
-	// PRINT_VERBOSE(String("---\nX: {0}\nY: {1}\nZ: {2}")
+	// ZN_PRINT_VERBOSE(String("---\nX: {0}\nY: {1}\nZ: {2}")
 	// 					  .format(varray(magica_x.to_vec3(), magica_y.to_vec3(), magica_z.to_vec3())));
 	magica_x = magica_to_opengl(magica_x);
 	magica_y = magica_to_opengl(magica_y);
@@ -161,8 +163,7 @@ static Basis parse_basis(uint8_t data) {
 	return b;
 }
 
-Error parse_node_common_header(
-		Node &node, FileAccess &f, const std::unordered_map<int, std::unique_ptr<Node>> &scene_graph) {
+Error parse_node_common_header(Node &node, FileAccess &f, const std::unordered_map<int, UniquePtr<Node>> &scene_graph) {
 	//
 	const int node_id = f.get_32();
 	ERR_FAIL_COND_V_MSG(scene_graph.find(node_id) != scene_graph.end(), ERR_INVALID_DATA,
@@ -195,18 +196,18 @@ Error Data::load_from_file(String fpath) {
 }
 
 Error Data::_load_from_file(String fpath) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 	// https://github.com/ephtracy/voxel-model/blob/master/MagicaVoxel-file-format-vox.txt
 	// https://github.com/ephtracy/voxel-model/blob/master/MagicaVoxel-file-format-vox-extension.txt
 
-	PRINT_VERBOSE(String("Loading ") + fpath);
+	ZN_PRINT_VERBOSE(format("Loading {}", fpath));
 
 	Error open_err;
-	FileAccessRef f_ref = FileAccess::open(fpath, FileAccess::READ, &open_err);
+	Ref<FileAccess> f_ref = FileAccess::open(fpath, FileAccess::READ, &open_err);
 	if (f_ref == nullptr) {
 		return open_err;
 	}
-	FileAccess &f = *f_ref;
+	FileAccess &f = **f_ref;
 
 	char magic[5] = { 0 };
 	ERR_FAIL_COND_V(f.get_buffer((uint8_t *)magic, 4) != 4, ERR_PARSE_ERROR);
@@ -228,8 +229,7 @@ Error Data::_load_from_file(String fpath) {
 		const uint32_t chunk_size = f.get_32();
 		f.get_32(); // child_chunks_size
 
-		PRINT_VERBOSE(String("Reading chunk {0} at {1}, size={2}")
-							  .format(varray(chunk_id, SIZE_T_TO_VARIANT(f.get_position()), chunk_size)));
+		ZN_PRINT_VERBOSE(format("Reading chunk {} at {}, size={}", chunk_id, f.get_position(), chunk_size));
 
 		if (strcmp(chunk_id, "SIZE") == 0) {
 			Vector3i size;
@@ -242,7 +242,7 @@ Error Data::_load_from_file(String fpath) {
 			last_size = magica_to_opengl(size);
 
 		} else if (strcmp(chunk_id, "XYZI") == 0) {
-			std::unique_ptr<Model> model = std::make_unique<Model>();
+			UniquePtr<Model> model = make_unique_instance<Model>();
 			model->color_indexes.resize(last_size.x * last_size.y * last_size.z, 0);
 			model->size = last_size;
 
@@ -276,7 +276,7 @@ Error Data::_load_from_file(String fpath) {
 			f.get_32();
 
 		} else if (strcmp(chunk_id, "nTRN") == 0) {
-			std::unique_ptr<TransformNode> node_ptr = std::make_unique<TransformNode>();
+			UniquePtr<TransformNode> node_ptr = make_unique_instance<TransformNode>();
 			TransformNode &node = *node_ptr;
 
 			Error header_err = parse_node_common_header(node, f, _scene_graph);
@@ -315,7 +315,7 @@ Error Data::_load_from_file(String fpath) {
 				// It is 3 integers formatted as text
 				Vector<float> coords = t_it->second.split_floats(" ");
 				ERR_FAIL_COND_V(coords.size() < 3, ERR_PARSE_ERROR);
-				//PRINT_VERBOSE(String("Pos: {0}, {1}, {2}").format(varray(coords[0], coords[1], coords[2])));
+				//ZN_PRINT_VERBOSE(String("Pos: {0}, {1}, {2}").format(varray(coords[0], coords[1], coords[2])));
 				node.position = magica_to_opengl(Vector3i(coords[0], coords[1], coords[2]));
 			}
 
@@ -333,7 +333,7 @@ Error Data::_load_from_file(String fpath) {
 			_scene_graph[node.id] = std::move(node_ptr);
 
 		} else if (strcmp(chunk_id, "nGRP") == 0) {
-			std::unique_ptr<GroupNode> node_ptr = std::make_unique<GroupNode>();
+			UniquePtr<GroupNode> node_ptr = make_unique_instance<GroupNode>();
 			GroupNode &node = *node_ptr;
 
 			Error header_err = parse_node_common_header(node, f, _scene_graph);
@@ -351,7 +351,7 @@ Error Data::_load_from_file(String fpath) {
 			_scene_graph[node.id] = std::move(node_ptr);
 
 		} else if (strcmp(chunk_id, "nSHP") == 0) {
-			std::unique_ptr<ShapeNode> node_ptr = std::make_unique<ShapeNode>();
+			UniquePtr<ShapeNode> node_ptr = make_unique_instance<ShapeNode>();
 			ShapeNode &node = *node_ptr;
 
 			Error header_err = parse_node_common_header(node, f, _scene_graph);
@@ -374,7 +374,7 @@ Error Data::_load_from_file(String fpath) {
 			_scene_graph[node.id] = std::move(node_ptr);
 
 		} else if (strcmp(chunk_id, "LAYR") == 0) {
-			std::unique_ptr<Layer> layer_ptr = std::make_unique<Layer>();
+			UniquePtr<Layer> layer_ptr = make_unique_instance<Layer>();
 			Layer &layer = *layer_ptr;
 
 			const int layer_id = f.get_32();
@@ -407,7 +407,7 @@ Error Data::_load_from_file(String fpath) {
 			_layers.push_back(std::move(layer_ptr));
 
 		} else if (strcmp(chunk_id, "MATL") == 0) {
-			std::unique_ptr<Material> material_ptr = std::make_unique<Material>();
+			UniquePtr<Material> material_ptr = make_unique_instance<Material>();
 			Material &material = *material_ptr;
 
 			const int material_id = f.get_32();
@@ -472,7 +472,7 @@ Error Data::_load_from_file(String fpath) {
 			_materials.insert(std::make_pair(material_id, std::move(material_ptr)));
 
 		} else {
-			PRINT_VERBOSE(String("Skipping chunk ") + chunk_id);
+			ZN_PRINT_VERBOSE(format("Skipping chunk {}", chunk_id));
 			// Ignore chunk
 			f.seek(f.get_position() + chunk_size);
 		}
@@ -552,7 +552,7 @@ Error Data::_load_from_file(String fpath) {
 		ERR_FAIL_COND_V_MSG(_root_node_id == -1, ERR_INVALID_DATA, "Root node not found");
 	}
 
-	PRINT_VERBOSE(String("Done loading ") + fpath);
+	ZN_PRINT_VERBOSE(format("Done loading {}", fpath));
 
 	return OK;
 }

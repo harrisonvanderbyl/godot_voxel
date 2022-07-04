@@ -1,5 +1,5 @@
 #include "funcs.h"
-#include "../funcs.h"
+#include "../math/conv.h"
 #include "../profiling.h"
 
 #include <core/config/engine.h>
@@ -7,6 +7,9 @@
 #include <scene/resources/concave_polygon_shape_3d.h>
 #include <scene/resources/mesh.h>
 #include <scene/resources/multimesh.h>
+#include <map>
+#include <sstream>
+#include <unordered_map>
 
 namespace zylann {
 
@@ -16,11 +19,7 @@ bool is_surface_triangulated(Array surface) {
 	return positions.size() >= 3 && indices.size() >= 3;
 }
 
-bool is_mesh_empty(Ref<Mesh> mesh_ref) {
-	if (mesh_ref.is_null()) {
-		return true;
-	}
-	const Mesh &mesh = **mesh_ref;
+bool is_mesh_empty(const Mesh &mesh) {
 	if (mesh.get_surface_count() == 0) {
 		return true;
 	}
@@ -30,41 +29,11 @@ bool is_mesh_empty(Ref<Mesh> mesh_ref) {
 	return false;
 }
 
-bool try_call_script(
-		const Object *obj, StringName method_name, const Variant **args, unsigned int argc, Variant *out_ret) {
-	ScriptInstance *script = obj->get_script_instance();
-	// TODO Is has_method() needed? I've seen `call()` being called anyways in ButtonBase
-	if (script == nullptr || !script->has_method(method_name)) {
-		return false;
-	}
-
-#ifdef TOOLS_ENABLED
-	if (Engine::get_singleton()->is_editor_hint() && !script->get_script()->is_tool()) {
-		// Can't call a method on a non-tool script in the editor
-		return false;
-	}
-#endif
-
-	Callable::CallError err;
-	Variant ret = script->callp(method_name, args, argc, err);
-
-	// TODO Why does Variant::get_call_error_text want a non-const Object pointer??? It only uses const methods
-	ERR_FAIL_COND_V_MSG(err.error != Callable::CallError::CALL_OK, false,
-			Variant::get_call_error_text(const_cast<Object *>(obj), method_name, nullptr, 0, err));
-	// This had to be explicitely logged due to the usual GD debugger not working with threads
-
-	if (out_ret != nullptr) {
-		*out_ret = ret;
-	}
-
-	return true;
-}
-
-// Faster version of Mesh::create_trimesh_shape()
-// See https://github.com/Zylann/godot_voxel/issues/54
-//
 Ref<ConcavePolygonShape3D> create_concave_polygon_shape(Span<const Array> surfaces) {
-	VOXEL_PROFILE_SCOPE();
+	// Faster version of Mesh::create_trimesh_shape()
+	// See https://github.com/Zylann/godot_voxel/issues/54
+
+	ZN_PROFILE_SCOPE();
 
 	PackedVector3Array face_points;
 	int face_points_size = 0;
@@ -87,7 +56,7 @@ Ref<ConcavePolygonShape3D> create_concave_polygon_shape(Span<const Array> surfac
 		return Ref<ConcavePolygonShape3D>();
 	}
 
-	//copy the points into it
+	// Deindex surfaces into a single one
 	unsigned int face_points_offset = 0;
 	for (unsigned int i = 0; i < surfaces.size(); i++) {
 		const Array &surface_arrays = surfaces[i];
@@ -125,8 +94,86 @@ Ref<ConcavePolygonShape3D> create_concave_polygon_shape(Span<const Array> surfac
 	}
 
 	Ref<ConcavePolygonShape3D> shape;
-	shape.instantiate();
-	shape->set_faces(face_points);
+	{
+		ZN_PROFILE_SCOPE_NAMED("Godot shape");
+		shape.instantiate();
+		shape->set_faces(face_points);
+	}
+	return shape;
+}
+
+Ref<ConcavePolygonShape3D> create_concave_polygon_shape(Span<const Vector3f> positions, Span<const int> indices) {
+	ZN_PROFILE_SCOPE();
+
+	PackedVector3Array face_points;
+
+	if (indices.size() < 3) {
+		return Ref<ConcavePolygonShape3D>();
+	}
+
+	face_points.resize(indices.size());
+
+	ERR_FAIL_COND_V(positions.size() < 3, Ref<ConcavePolygonShape3D>());
+	ERR_FAIL_COND_V(indices.size() < 3, Ref<ConcavePolygonShape3D>());
+	ERR_FAIL_COND_V(indices.size() % 3 != 0, Ref<ConcavePolygonShape3D>());
+
+	// Deindex mesh
+	{
+		Vector3 *w = face_points.ptrw();
+		for (unsigned int ii = 0; ii < indices.size(); ++ii) {
+			const int index = indices[ii];
+			w[ii] = to_vec3(positions[index]);
+		}
+	}
+
+	Ref<ConcavePolygonShape3D> shape;
+	{
+		ZN_PROFILE_SCOPE_NAMED("Godot shape");
+		shape.instantiate();
+		shape->set_faces(face_points);
+	}
+	return shape;
+}
+
+Ref<ConcavePolygonShape3D> create_concave_polygon_shape(const Array surface_arrays, unsigned int index_count) {
+	ZN_PROFILE_SCOPE();
+
+	Ref<ConcavePolygonShape3D> shape;
+
+	if (surface_arrays.size() == 0) {
+		return shape;
+	}
+	ZN_ASSERT(surface_arrays.size() == Mesh::ARRAY_MAX);
+
+	PackedInt32Array indices = surface_arrays[Mesh::ARRAY_INDEX];
+	ERR_FAIL_COND_V(index_count < 0 || index_count > static_cast<unsigned int>(indices.size()), shape);
+	if (indices.size() < 3) {
+		return shape;
+	}
+
+	PackedVector3Array positions = surface_arrays[Mesh::ARRAY_VERTEX];
+
+	ERR_FAIL_COND_V(positions.size() < 3, shape);
+	ERR_FAIL_COND_V(indices.size() < 3, shape);
+	ERR_FAIL_COND_V(indices.size() % 3 != 0, shape);
+
+	PackedVector3Array face_points;
+	face_points.resize(indices.size());
+
+	// Deindex mesh
+	{
+		Vector3 *w = face_points.ptrw();
+		for (unsigned int ii = 0; ii < index_count; ++ii) {
+			const int index = indices[ii];
+			w[ii] = positions[index];
+		}
+	}
+
+	{
+		ZN_PROFILE_SCOPE_NAMED("Godot shape");
+		shape.instantiate();
+		shape->set_faces(face_points);
+	}
 	return shape;
 }
 
@@ -138,11 +185,11 @@ int get_visible_instance_count(const MultiMesh &mm) {
 	return visible_count;
 }
 
-Array generate_debug_seams_wireframe_surface(Ref<Mesh> src_mesh, int surface_index) {
-	if (src_mesh->surface_get_primitive_type(surface_index) != Mesh::PRIMITIVE_TRIANGLES) {
+Array generate_debug_seams_wireframe_surface(const Mesh &src_mesh, int surface_index) {
+	if (src_mesh.surface_get_primitive_type(surface_index) != Mesh::PRIMITIVE_TRIANGLES) {
 		return Array();
 	}
-	Array src_surface = src_mesh->surface_get_arrays(surface_index);
+	Array src_surface = src_mesh.surface_get_arrays(surface_index);
 	if (src_surface.is_empty()) {
 		return Array();
 	}
@@ -157,25 +204,26 @@ Array generate_debug_seams_wireframe_surface(Ref<Mesh> src_mesh, int surface_ind
 		int count = 0;
 	};
 
-	// TODO Maybe use a Map actually, so we can have a comparator with floating error
-	HashMap<Vector3, Dupe> vertex_to_dupe;
-	HashMap<int, int> src_index_to_dst_index;
+	// Using a map so we can have a comparator with floating error
+	std::map<Vector3, Dupe> vertex_to_dupe;
+	std::unordered_map<int, int> src_index_to_dst_index;
 	std::vector<Vector3> dst_positions;
 	{
 		//const Vector3 *src_positions_read = src_positions.ptr();
 		//const Vector3 *src_normals_read = src_normals.ptr();
 		for (int i = 0; i < src_positions.size(); ++i) {
 			const Vector3 pos = src_positions[i];
-			Dupe *dptr = vertex_to_dupe.getptr(pos);
-			if (dptr == nullptr) {
-				vertex_to_dupe.set(pos, Dupe());
+			auto dupe_it = vertex_to_dupe.find(pos);
+			if (dupe_it == vertex_to_dupe.end()) {
+				vertex_to_dupe.insert({ pos, Dupe() });
 			} else {
-				if (dptr->count == 0) {
-					dptr->dst_index = dst_positions.size();
+				Dupe &dupe = dupe_it->second;
+				if (dupe.count == 0) {
+					dupe.dst_index = dst_positions.size();
 					dst_positions.push_back(pos + src_normals[i] * 0.05);
 				}
-				++dptr->count;
-				src_index_to_dst_index.set(i, dptr->dst_index);
+				++dupe.count;
+				src_index_to_dst_index.insert({ i, dupe.dst_index });
 			}
 		}
 	}
@@ -187,20 +235,22 @@ Array generate_debug_seams_wireframe_surface(Ref<Mesh> src_mesh, int surface_ind
 			const int vi0 = src_indices[i];
 			const int vi1 = src_indices[i + 1];
 			const int vi2 = src_indices[i + 2];
-			const int *v0ptr = src_index_to_dst_index.getptr(vi0);
-			const int *v1ptr = src_index_to_dst_index.getptr(vi1);
-			const int *v2ptr = src_index_to_dst_index.getptr(vi2);
-			if (v0ptr != nullptr && v1ptr != nullptr) {
-				dst_indices.push_back(*v0ptr);
-				dst_indices.push_back(*v1ptr);
+
+			auto v0_it = src_index_to_dst_index.find(vi0);
+			auto v1_it = src_index_to_dst_index.find(vi1);
+			auto v2_it = src_index_to_dst_index.find(vi2);
+
+			if (v0_it != src_index_to_dst_index.end() && v1_it != src_index_to_dst_index.end()) {
+				dst_indices.push_back(v0_it->second);
+				dst_indices.push_back(v1_it->second);
 			}
-			if (v1ptr != nullptr && v2ptr != nullptr) {
-				dst_indices.push_back(*v1ptr);
-				dst_indices.push_back(*v2ptr);
+			if (v1_it != src_index_to_dst_index.end() && v2_it != src_index_to_dst_index.end()) {
+				dst_indices.push_back(v1_it->second);
+				dst_indices.push_back(v2_it->second);
 			}
-			if (v2ptr != nullptr && v0ptr != nullptr) {
-				dst_indices.push_back(*v2ptr);
-				dst_indices.push_back(*v0ptr);
+			if (v2_it != src_index_to_dst_index.end() && v0_it != src_index_to_dst_index.end()) {
+				dst_indices.push_back(v2_it->second);
+				dst_indices.push_back(v0_it->second);
 			}
 		}
 	}
@@ -294,4 +344,29 @@ void copy_to(Vector<Vector2> &dst, const std::vector<Vector2f> &src) {
 #endif
 }
 
+PackedStringArray to_godot(const std::vector<std::string_view> &svv) {
+	PackedStringArray psa;
+	psa.resize(svv.size());
+	for (unsigned int i = 0; i < svv.size(); ++i) {
+		psa.write[i] = to_godot(svv[i]);
+	}
+	return psa;
+}
+
+PackedStringArray to_godot(const std::vector<std::string> &sv) {
+	PackedStringArray psa;
+	psa.resize(sv.size());
+	for (unsigned int i = 0; i < sv.size(); ++i) {
+		psa.write[i] = to_godot(sv[i]);
+	}
+	return psa;
+}
+
 } // namespace zylann
+
+std::stringstream &operator<<(std::stringstream &ss, GodotStringWrapper s) {
+	const CharString cs = s.s.utf8();
+	// String has non-explicit constructors from various types making this ambiguous
+	ss.std::stringstream::operator<<(cs.get_data());
+	return ss;
+}

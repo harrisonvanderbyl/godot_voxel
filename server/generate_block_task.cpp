@@ -1,7 +1,10 @@
 #include "generate_block_task.h"
+#include "../storage/voxel_buffer_internal.h"
+#include "../storage/voxel_data_map.h"
 #include "../util/godot/funcs.h"
-#include "../util/macros.h"
+#include "../util/log.h"
 #include "../util/profiling.h"
+#include "../util/string_funcs.h"
 #include "save_block_data_task.h"
 #include "voxel_server.h"
 
@@ -24,7 +27,7 @@ int GenerateBlockTask::debug_get_running_count() {
 }
 
 void GenerateBlockTask::run(zylann::ThreadedTaskContext ctx) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	CRASH_COND(stream_dependency == nullptr);
 	Ref<VoxelGenerator> generator = stream_dependency->generator;
@@ -33,7 +36,7 @@ void GenerateBlockTask::run(zylann::ThreadedTaskContext ctx) {
 	const Vector3i origin_in_voxels = (position << lod) * block_size;
 
 	if (voxels == nullptr) {
-		voxels = gd_make_shared<VoxelBufferInternal>();
+		voxels = make_shared_instance<VoxelBufferInternal>();
 		voxels->create(block_size, block_size, block_size);
 	}
 
@@ -41,17 +44,21 @@ void GenerateBlockTask::run(zylann::ThreadedTaskContext ctx) {
 	const VoxelGenerator::Result result = generator->generate_block(query_data);
 	max_lod_hint = result.max_lod_hint;
 
+	if (data != nullptr) {
+		data->modifiers.apply(
+				query_data.voxel_buffer, AABB(query_data.origin_in_voxels, query_data.voxel_buffer.get_size() << lod));
+	}
+
 	if (stream_dependency->valid) {
 		Ref<VoxelStream> stream = stream_dependency->stream;
 
 		// TODO In some cases we dont want this to run all the time, do we?
 		// Like in full load mode, where non-edited blocks remain generated on the fly...
 		if (stream.is_valid() && stream->get_save_generator_output()) {
-			PRINT_VERBOSE(
-					String("Requesting save of generator output for block {0} lod {1}").format(varray(position, lod)));
+			ZN_PRINT_VERBOSE(format("Requesting save of generator output for block {} lod {}", position, lod));
 
 			// TODO Optimization: `voxels` doesnt actually need to be shared
-			std::shared_ptr<VoxelBufferInternal> voxels_copy = gd_make_shared<VoxelBufferInternal>();
+			std::shared_ptr<VoxelBufferInternal> voxels_copy = make_shared_instance<VoxelBufferInternal>();
 			voxels->duplicate_to(*voxels_copy, true);
 
 			// No instances, generators are not designed to produce them at this stage yet.
@@ -60,7 +67,7 @@ void GenerateBlockTask::run(zylann::ThreadedTaskContext ctx) {
 			SaveBlockDataTask *save_task =
 					memnew(SaveBlockDataTask(volume_id, position, lod, block_size, voxels_copy, stream_dependency));
 
-			VoxelServer::get_singleton()->push_async_task(save_task);
+			VoxelServer::get_singleton().push_async_task(save_task);
 		}
 	}
 
@@ -81,21 +88,29 @@ bool GenerateBlockTask::is_cancelled() {
 void GenerateBlockTask::apply_result() {
 	bool aborted = true;
 
-	if (VoxelServer::get_singleton()->is_volume_valid(volume_id)) {
+	if (VoxelServer::get_singleton().is_volume_valid(volume_id)) {
 		// TODO Comparing pointer may not be guaranteed
 		// The request response must match the dependency it would have been requested with.
 		// If it doesn't match, we are no longer interested in the result.
 		if (stream_dependency->valid) {
+			Ref<VoxelStream> stream = stream_dependency->stream;
+
 			VoxelServer::BlockDataOutput o;
 			o.voxels = voxels;
 			o.position = position;
 			o.lod = lod;
 			o.dropped = !has_run;
-			o.type = VoxelServer::BlockDataOutput::TYPE_GENERATED;
+			if (stream.is_valid() && stream->get_save_generator_output()) {
+				// We can't consider the block as "generated" since there is no state to tell that once saved,
+				// so it has to be considered an edited block
+				o.type = VoxelServer::BlockDataOutput::TYPE_LOADED;
+			} else {
+				o.type = VoxelServer::BlockDataOutput::TYPE_GENERATED;
+			}
 			o.max_lod_hint = max_lod_hint;
 			o.initial_load = false;
 
-			VoxelServer::VolumeCallbacks callbacks = VoxelServer::get_singleton()->get_volume_callbacks(volume_id);
+			VoxelServer::VolumeCallbacks callbacks = VoxelServer::get_singleton().get_volume_callbacks(volume_id);
 			ERR_FAIL_COND(callbacks.data_output_callback == nullptr);
 			callbacks.data_output_callback(callbacks.data, o);
 
@@ -104,7 +119,7 @@ void GenerateBlockTask::apply_result() {
 
 	} else {
 		// This can happen if the user removes the volume while requests are still about to return
-		PRINT_VERBOSE("Gemerated data request response came back but volume wasn't found");
+		ZN_PRINT_VERBOSE("Gemerated data request response came back but volume wasn't found");
 	}
 
 	// TODO We could complete earlier inside run() if we had access to the data structure to write the block into.

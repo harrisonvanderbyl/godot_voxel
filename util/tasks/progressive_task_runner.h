@@ -1,8 +1,7 @@
-#ifndef PROGRESSIVE_TASK_RUNNER_H
-#define PROGRESSIVE_TASK_RUNNER_H
+#ifndef ZYLANN_PROGRESSIVE_TASK_RUNNER_H
+#define ZYLANN_PROGRESSIVE_TASK_RUNNER_H
 
-#include "../math/funcs.h"
-#include <core/os/time.h>
+#include <cstdint>
 #include <queue>
 
 namespace zylann {
@@ -47,4 +46,4 @@ private:
 
 } // namespace zylann
 
-#endif // PROGRESSIVE_TASK_RUNNER_H
+#endif // ZYLANN_PROGRESSIVE_TASK_RUNNER_H

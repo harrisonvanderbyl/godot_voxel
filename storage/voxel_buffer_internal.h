@@ -5,13 +5,11 @@
 #include "../util/fixed_array.h"
 #include "../util/flat_map.h"
 #include "../util/math/box3i.h"
+#include "../util/thread/rw_lock.h"
 #include "funcs.h"
+#include "voxel_metadata.h"
 
-#include <core/object/ref_counted.h>
-#include <core/templates/vector.h>
 #include <limits>
-
-class Image;
 
 namespace zylann::voxel {
 
@@ -57,7 +55,7 @@ public:
 	};
 
 	static inline uint32_t get_depth_byte_count(VoxelBufferInternal::Depth d) {
-		CRASH_COND(d < 0 || d >= VoxelBufferInternal::DEPTH_COUNT);
+		ZN_ASSERT(d >= 0 && d < VoxelBufferInternal::DEPTH_COUNT);
 		return 1 << d;
 	}
 
@@ -77,7 +75,7 @@ public:
 			case 8:
 				return DEPTH_64_BIT;
 			default:
-				CRASH_NOW();
+				ZN_CRASH();
 		}
 		return DEPTH_COUNT;
 	}
@@ -117,32 +115,38 @@ public:
 	void create(unsigned int sx, unsigned int sy, unsigned int sz);
 	void create(Vector3i size);
 	void clear();
-	void clear_channel(unsigned int channel_index, uint64_t clear_value = 0);
+	void clear_channel(unsigned int channel_index, uint64_t clear_value);
 	void clear_channel_f(unsigned int channel_index, real_t clear_value);
 
-	_FORCE_INLINE_ const Vector3i &get_size() const {
+	inline const Vector3i &get_size() const {
 		return _size;
 	}
 
 	void set_default_values(FixedArray<uint64_t, VoxelBufferInternal::MAX_CHANNELS> values);
 
-	uint64_t get_voxel(int x, int y, int z, unsigned int channel_index = 0) const;
-	void set_voxel(uint64_t value, int x, int y, int z, unsigned int channel_index = 0);
+	uint64_t get_voxel(int x, int y, int z, unsigned int channel_index) const;
+	void set_voxel(uint64_t value, int x, int y, int z, unsigned int channel_index);
 
-	real_t get_voxel_f(int x, int y, int z, unsigned int channel_index = 0) const;
-	void set_voxel_f(real_t value, int x, int y, int z, unsigned int channel_index = 0);
+	real_t get_voxel_f(int x, int y, int z, unsigned int channel_index) const;
+	inline real_t get_voxel_f(Vector3i pos, unsigned int channel_index) const {
+		return get_voxel_f(pos.x, pos.y, pos.z, channel_index);
+	}
+	void set_voxel_f(real_t value, int x, int y, int z, unsigned int channel_index);
+	inline void set_voxel_f(real_t value, Vector3i pos, unsigned int channel_index) {
+		set_voxel_f(value, pos.x, pos.y, pos.z, channel_index);
+	}
 
-	_FORCE_INLINE_ uint64_t get_voxel(const Vector3i pos, unsigned int channel_index = 0) const {
+	inline uint64_t get_voxel(const Vector3i pos, unsigned int channel_index) const {
 		return get_voxel(pos.x, pos.y, pos.z, channel_index);
 	}
-	_FORCE_INLINE_ void set_voxel(int value, const Vector3i pos, unsigned int channel_index = 0) {
+	inline void set_voxel(int value, const Vector3i pos, unsigned int channel_index) {
 		set_voxel(value, pos.x, pos.y, pos.z, channel_index);
 	}
 
-	void fill(uint64_t defval, unsigned int channel_index = 0);
-	void fill_area(uint64_t defval, Vector3i min, Vector3i max, unsigned int channel_index = 0);
+	void fill(uint64_t defval, unsigned int channel_index);
+	void fill_area(uint64_t defval, Vector3i min, Vector3i max, unsigned int channel_index);
 	void fill_area_f(float fvalue, Vector3i min, Vector3i max, unsigned int channel_index);
-	void fill_f(real_t value, unsigned int channel = 0);
+	void fill_f(real_t value, unsigned int channel);
 
 	bool is_uniform(unsigned int channel_index) const;
 
@@ -169,12 +173,12 @@ public:
 	template <typename T>
 	void copy_from(Span<const T> src, Vector3i src_size, Vector3i src_min, Vector3i src_max, Vector3i dst_min,
 			unsigned int channel_index) {
-		ERR_FAIL_INDEX(channel_index, MAX_CHANNELS);
+		ZN_ASSERT_RETURN(channel_index < MAX_CHANNELS);
 
 		const Channel &channel = _channels[channel_index];
 #ifdef DEBUG_ENABLED
 		// Size of source and destination values must match
-		ERR_FAIL_COND(channel.depth != get_depth_from_size(sizeof(T)));
+		ZN_ASSERT_RETURN(channel.depth == get_depth_from_size(sizeof(T)));
 #endif
 
 		// This function always decompresses the destination.
@@ -195,12 +199,12 @@ public:
 	template <typename T>
 	void copy_to(Span<T> dst, Vector3i dst_size, Vector3i dst_min, Vector3i src_min, Vector3i src_max,
 			unsigned int channel_index) const {
-		ERR_FAIL_INDEX(channel_index, MAX_CHANNELS);
+		ZN_ASSERT_RETURN(channel_index < MAX_CHANNELS);
 
 		const Channel &channel = _channels[channel_index];
 #ifdef DEBUG_ENABLED
 		// Size of source and destination values must match
-		ERR_FAIL_COND(channel.depth != get_depth_from_size(sizeof(T)));
+		ZN_ASSERT_RETURN(channel.depth == get_depth_from_size(sizeof(T)));
 #endif
 
 		if (channel.data == nullptr) {
@@ -218,7 +222,7 @@ public:
 	// Can be used to blend voxels together.
 	template <typename F>
 	inline void read_write_action(Box3i box, unsigned int channel_index, F action_func) {
-		ERR_FAIL_INDEX(channel_index, MAX_CHANNELS);
+		ZN_ASSERT_RETURN(channel_index < MAX_CHANNELS);
 
 		box.clip(Box3i(Vector3i(), _size));
 		Vector3i min_pos = box.pos;
@@ -238,11 +242,11 @@ public:
 		}
 	}
 
-	static _FORCE_INLINE_ size_t get_index(const Vector3i pos, const Vector3i size) {
+	static inline size_t get_index(const Vector3i pos, const Vector3i size) {
 		return Vector3iUtil::get_zxy_index(pos, size);
 	}
 
-	_FORCE_INLINE_ size_t get_index(unsigned int x, unsigned int y, unsigned int z) const {
+	inline size_t get_index(unsigned int x, unsigned int y, unsigned int z) const {
 		return y + _size.y * (x + _size.x * z); // ZXY index
 	}
 
@@ -269,8 +273,8 @@ public:
 		decompress_channel(channel_index);
 		Channel &channel = _channels[channel_index];
 #ifdef DEBUG_ENABLED
-		ERR_FAIL_COND(!Box3i(Vector3i(), _size).contains(box));
-		ERR_FAIL_COND(get_depth_byte_count(channel.depth) != sizeof(Data_T));
+		ZN_ASSERT_RETURN(Box3i(Vector3i(), _size).contains(box));
+		ZN_ASSERT_RETURN(get_depth_byte_count(channel.depth) == sizeof(Data_T));
 #endif
 		Span<Data_T> data = Span<uint8_t>(channel.data, channel.size_in_bytes).reinterpret_cast_to<Data_T>();
 		// `&` is required because lambda captures are `const` by default and `mutable` can be used only from C++23
@@ -289,9 +293,9 @@ public:
 		Channel &channel0 = _channels[channel_index0];
 		Channel &channel1 = _channels[channel_index1];
 #ifdef DEBUG_ENABLED
-		ERR_FAIL_COND(!Box3i(Vector3i(), _size).contains(box));
-		ERR_FAIL_COND(get_depth_byte_count(channel0.depth) != sizeof(Data0_T));
-		ERR_FAIL_COND(get_depth_byte_count(channel1.depth) != sizeof(Data1_T));
+		ZN_ASSERT_RETURN(Box3i(Vector3i(), _size).contains(box));
+		ZN_ASSERT_RETURN(get_depth_byte_count(channel0.depth) == sizeof(Data0_T));
+		ZN_ASSERT_RETURN(get_depth_byte_count(channel1.depth) == sizeof(Data1_T));
 #endif
 		Span<Data0_T> data0 = Span<uint8_t>(channel0.data, channel0.size_in_bytes).reinterpret_cast_to<Data0_T>();
 		Span<Data1_T> data1 = Span<uint8_t>(channel1.data, channel1.size_in_bytes).reinterpret_cast_to<Data1_T>();
@@ -306,7 +310,7 @@ public:
 	template <typename F>
 	void write_box(const Box3i &box, unsigned int channel_index, F action_func, Vector3i offset) {
 #ifdef DEBUG_ENABLED
-		ERR_FAIL_INDEX(channel_index, MAX_CHANNELS);
+		ZN_ASSERT_RETURN(channel_index < MAX_CHANNELS);
 #endif
 		const Channel &channel = _channels[channel_index];
 		switch (channel.depth) {
@@ -323,7 +327,7 @@ public:
 				write_box_template<F, uint64_t>(box, channel_index, action_func, offset);
 				break;
 			default:
-				ERR_FAIL();
+				ZN_PRINT_ERROR("Unknown channel");
 				break;
 		}
 	}
@@ -379,24 +383,31 @@ public:
 	void duplicate_to(VoxelBufferInternal &dst, bool include_metadata) const;
 	void move_to(VoxelBufferInternal &dst);
 
-	_FORCE_INLINE_ bool is_position_valid(unsigned int x, unsigned int y, unsigned int z) const {
+	inline bool is_position_valid(unsigned int x, unsigned int y, unsigned int z) const {
 		return x < (unsigned)_size.x && y < (unsigned)_size.y && z < (unsigned)_size.z;
 	}
 
-	_FORCE_INLINE_ bool is_position_valid(const Vector3i pos) const {
+	inline bool is_position_valid(const Vector3i pos) const {
 		return is_position_valid(pos.x, pos.y, pos.z);
 	}
 
-	_FORCE_INLINE_ bool is_box_valid(const Box3i box) const {
+	inline bool is_box_valid(const Box3i box) const {
 		return Box3i(Vector3i(), _size).contains(box);
 	}
 
-	_FORCE_INLINE_ uint64_t get_volume() const {
+	inline uint64_t get_volume() const {
 		return Vector3iUtil::get_volume(_size);
 	}
 
-	// TODO Have a template version based on channel depth
 	bool get_channel_raw(unsigned int channel_index, Span<uint8_t> &slice) const;
+
+	template <typename T>
+	bool get_channel_data(unsigned int channel_index, Span<T> &dst) const {
+		Span<uint8_t> dst8;
+		ZN_ASSERT_RETURN_V(get_channel_raw(channel_index, dst8), false);
+		dst = dst8.reinterpret_cast_to<T>();
+		return true;
+	}
 
 	void downscale_to(VoxelBufferInternal &dst, Vector3i src_min, Vector3i src_max, Vector3i dst_min) const;
 
@@ -410,37 +421,48 @@ public:
 	// This returns that scale for a given depth configuration.
 	static float get_sdf_quantization_scale(Depth d);
 
+	void get_range_f(float &out_min, float &out_max, ChannelId channel_index) const;
+
 	// Metadata
 
-	Variant get_block_metadata() const {
-		return _block_metadata.user_data;
+	VoxelMetadata &get_block_metadata() {
+		return _block_metadata;
 	}
-	void set_block_metadata(Variant meta);
+	const VoxelMetadata &get_block_metadata() const {
+		return _block_metadata;
+	}
 
-	Variant get_voxel_metadata(Vector3i pos) const;
-	void set_voxel_metadata(Vector3i pos, Variant meta);
+	const VoxelMetadata *get_voxel_metadata(Vector3i pos) const;
+	VoxelMetadata *get_voxel_metadata(Vector3i pos);
+	VoxelMetadata *get_or_create_voxel_metadata(Vector3i pos);
+	void erase_voxel_metadata(Vector3i pos);
 
-	void clear_and_set_voxel_metadata(Span<FlatMap<Vector3i, Variant>::Pair> pairs);
+	void clear_and_set_voxel_metadata(Span<FlatMapMoveOnly<Vector3i, VoxelMetadata>::Pair> pairs);
 
 	template <typename F>
 	void for_each_voxel_metadata_in_area(Box3i box, F callback) const {
-		for (FlatMap<Vector3i, Variant>::ConstIterator it = _voxel_metadata.begin(); it != _voxel_metadata.end();
-				++it) {
+		// TODO For `find`s and this kind of iteration, we may want to separate keys and values in FlatMap's internal
+		// storage, to reduce cache misses
+		for (FlatMapMoveOnly<Vector3i, VoxelMetadata>::ConstIterator it = _voxel_metadata.begin();
+				it != _voxel_metadata.end(); ++it) {
 			if (box.contains(it->key)) {
 				callback(it->key, it->value);
 			}
 		}
 	}
 
-	void for_each_voxel_metadata(const Callable &callback) const;
-	void for_each_voxel_metadata_in_area(const Callable &callback, Box3i box) const;
+	// #ifdef ZN_GODOT
+	// 	// TODO Move out of here
+	// 	void for_each_voxel_metadata(const Callable &callback) const;
+	// 	void for_each_voxel_metadata_in_area(const Callable &callback, Box3i box) const;
+	// #endif
 
 	void clear_voxel_metadata();
 	void clear_voxel_metadata_in_area(Box3i box);
 	void copy_voxel_metadata_in_area(const VoxelBufferInternal &src_buffer, Box3i src_box, Vector3i dst_origin);
 	void copy_voxel_metadata(const VoxelBufferInternal &src_buffer);
 
-	const FlatMap<Vector3i, Variant> &get_voxel_metadata() const {
+	const FlatMapMoveOnly<Vector3i, VoxelMetadata> &get_voxel_metadata() const {
 		return _voxel_metadata;
 	}
 
@@ -455,10 +477,6 @@ public:
 	inline RWLock &get_lock() {
 		return _rw_lock;
 	}
-
-	// Debugging
-
-	Ref<Image> debug_print_sdf_to_image_top_down();
 
 private:
 	bool create_channel_noinit(int i, Vector3i size);
@@ -477,15 +495,10 @@ private:
 	// How many voxels are there in the three directions. All populated channels have the same size.
 	Vector3i _size;
 
-	struct BlockMetadata {
-		// User-defined data, not used by the engine
-		Variant user_data;
-	};
-
 	// TODO Could we separate metadata from VoxelBufferInternal?
-	BlockMetadata _block_metadata;
+	VoxelMetadata _block_metadata;
 	// This metadata is expected to be sparse, with low amount of items.
-	FlatMap<Vector3i, Variant> _voxel_metadata;
+	FlatMapMoveOnly<Vector3i, VoxelMetadata> _voxel_metadata;
 
 	// TODO It may be preferable to actually move away from storing an RWLock in every buffer in the future.
 	// We should be able to find a solution because very few of these locks are actually used at a given time.

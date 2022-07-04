@@ -54,14 +54,14 @@ float VoxelVoxSceneImporter::get_priority() const {
 
 void VoxelVoxSceneImporter::get_import_options(
 		const String &p_path, List<ImportOption> *r_options, int p_preset) const {
-	VoxelStringNames *sn = VoxelStringNames::get_singleton();
-	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn->store_colors_in_texture), false));
-	r_options->push_back(ImportOption(PropertyInfo(Variant::FLOAT, sn->scale), 1.f));
-	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn->enable_baked_lighting), true));
+	const VoxelStringNames &sn = VoxelStringNames::get_singleton();
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn.store_colors_in_texture), false));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::FLOAT, sn.scale), 1.f));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn.enable_baked_lighting), true));
 }
 
 bool VoxelVoxSceneImporter::get_option_visibility(
-		const String &p_path, const String &p_option, const Map<StringName, Variant> &p_options) const {
+		const String &p_path, const String &p_option, const HashMap<StringName, Variant> &p_options) const {
 	return true;
 }
 
@@ -237,13 +237,13 @@ static Error process_scene_node_recursively(const Data &data, int node_id, Node3
 // }
 
 Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p_save_path,
-		const Map<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files,
+		const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files,
 		Variant *r_metadata) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
-	const bool p_store_colors_in_textures = p_options[VoxelStringNames::get_singleton()->store_colors_in_texture];
-	const float p_scale = p_options[VoxelStringNames::get_singleton()->scale];
-	const bool p_enable_baked_lighting = p_options[VoxelStringNames::get_singleton()->enable_baked_lighting];
+	const bool p_store_colors_in_textures = p_options[VoxelStringNames::get_singleton().store_colors_in_texture];
+	const float p_scale = p_options[VoxelStringNames::get_singleton().scale];
+	const bool p_enable_baked_lighting = p_options[VoxelStringNames::get_singleton().enable_baked_lighting];
 
 	magica::Data data;
 	const Error load_err = data.load_from_file(p_source_file);
@@ -370,7 +370,7 @@ Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p
 
 	// Save meshes
 	for (unsigned int model_index = 0; model_index < meshes.size(); ++model_index) {
-		VOXEL_PROFILE_SCOPE();
+		ZN_PROFILE_SCOPE();
 		Ref<Mesh> mesh = meshes[model_index].mesh;
 		String res_save_path = String("{0}.model{1}.mesh").format(varray(p_save_path, model_index));
 		// `FLAG_CHANGE_PATH` did not do what I thought it did.
@@ -384,7 +384,7 @@ Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p
 
 	// Save scene
 	{
-		VOXEL_PROFILE_SCOPE();
+		ZN_PROFILE_SCOPE();
 		Ref<PackedScene> scene;
 		scene.instantiate();
 		scene->pack(root_node);

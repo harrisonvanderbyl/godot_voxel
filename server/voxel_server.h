@@ -1,27 +1,19 @@
 #ifndef VOXEL_SERVER_H
 #define VOXEL_SERVER_H
 
-#include "../generators/voxel_generator.h"
-#include "../meshers/blocky/voxel_mesher_blocky.h"
-#include "../streams/voxel_stream.h"
+#include "../meshers/voxel_mesher.h"
+#include "../streams/instance_data.h"
 #include "../util/file_locker.h"
+#include "../util/memory.h"
 #include "../util/struct_db.h"
 #include "../util/tasks/progressive_task_runner.h"
 #include "../util/tasks/threaded_task_runner.h"
 #include "../util/tasks/time_spread_task_runner.h"
-#include "mesh_block_task.h"
-#include "streaming_dependency.h"
-
-#include <memory>
-
-namespace zylann {
-class AsyncDependencyTracker;
-}
+#include "priority_dependency.h"
 
 namespace zylann::voxel {
 
-// Access point for asynchronous voxel processing APIs.
-// Functions must be used from the main thread.
+// Singleton for common things, notably the task system and shared viewers list.
 class VoxelServer {
 public:
 	struct BlockMeshOutput {
@@ -32,8 +24,17 @@ public:
 
 		Type type;
 		VoxelMesher::Output surfaces;
+		// Only used if `has_mesh_resource` is true.
+		Ref<Mesh> mesh;
+		// Remaps Mesh surface indices to Mesher material indices. Only used if `has_mesh_resource` is true.
+		// TODO Optimize: candidate for small vector optimization. A big majority of meshes will have a handful of
+		// surfaces, which would fit here without allocating.
+		std::vector<uint8_t> mesh_material_indices;
+		// In mesh block coordinates
 		Vector3i position;
 		uint8_t lod;
+		// Tells if the mesh resource was built as part of the task. If not, you need to build it on the main thread.
+		bool has_mesh_resource;
 	};
 
 	struct BlockDataOutput {
@@ -44,33 +45,28 @@ public:
 		};
 
 		Type type;
+		// If voxels are null with TYPE_LOADED, it means no block was found in the stream (if any) and no generator task
+		// was scheduled. This is the case when we don't want to cache blocks of generated data.
 		std::shared_ptr<VoxelBufferInternal> voxels;
-		std::unique_ptr<InstanceBlockData> instances;
+		UniquePtr<InstanceBlockData> instances;
 		Vector3i position;
 		uint8_t lod;
 		bool dropped;
 		bool max_lod_hint;
-		// Blocks with this flag set should not be ignored
+		// Blocks with this flag set should not be ignored.
+		// This is used when data streaming is off, all blocks are loaded at once.
 		bool initial_load;
 	};
 
-	struct BlockMeshInput {
-		// Moore area ordered by forward XYZ iteration
-		FixedArray<std::shared_ptr<VoxelBufferInternal>, constants::MAX_BLOCK_COUNT_PER_REQUEST> data_blocks;
-		unsigned int data_blocks_count = 0;
-		Vector3i render_block_position;
-		uint8_t lod = 0;
-	};
-
 	struct VolumeCallbacks {
-		void (*mesh_output_callback)(void *, const BlockMeshOutput &) = nullptr;
+		void (*mesh_output_callback)(void *, BlockMeshOutput &) = nullptr;
 		void (*data_output_callback)(void *, BlockDataOutput &) = nullptr;
 		void *data = nullptr;
 
 		inline bool check_callbacks() const {
-			ERR_FAIL_COND_V(mesh_output_callback == nullptr, false);
-			ERR_FAIL_COND_V(data_output_callback == nullptr, false);
-			ERR_FAIL_COND_V(data == nullptr, false);
+			ZN_ASSERT_RETURN_V(mesh_output_callback != nullptr, false);
+			ZN_ASSERT_RETURN_V(data_output_callback != nullptr, false);
+			ZN_ASSERT_RETURN_V(data != nullptr, false);
 			return true;
 		}
 	};
@@ -90,43 +86,28 @@ public:
 		int network_peer_id = -1;
 	};
 
-	enum VolumeType { //
-		VOLUME_SPARSE_GRID,
-		VOLUME_SPARSE_OCTREE
+	struct ThreadsConfig {
+		int thread_count_minimum = 1;
+		// How many threads below available count on the CPU should we set as limit
+		int thread_count_margin_below_max = 1;
+		// Portion of available CPU threads to attempt using
+		float thread_count_ratio_over_max = 0.5;
 	};
 
-	static VoxelServer *get_singleton();
-	static void create_singleton();
+	static VoxelServer &get_singleton();
+	static void create_singleton(ThreadsConfig threads_config);
 	static void destroy_singleton();
 
-	VoxelServer();
-	~VoxelServer();
-
-	// TODO Rename functions to C convention
-	uint32_t add_volume(VolumeCallbacks callbacks, VolumeType type);
-	void set_volume_transform(uint32_t volume_id, Transform3D t);
-	void set_volume_render_block_size(uint32_t volume_id, uint32_t block_size);
-	void set_volume_data_block_size(uint32_t volume_id, uint32_t block_size);
-	void set_volume_stream(uint32_t volume_id, Ref<VoxelStream> stream);
-	void set_volume_generator(uint32_t volume_id, Ref<VoxelGenerator> generator);
-	void set_volume_mesher(uint32_t volume_id, Ref<VoxelMesher> mesher);
+	uint32_t add_volume(VolumeCallbacks callbacks);
 	VolumeCallbacks get_volume_callbacks(uint32_t volume_id) const;
-	void set_volume_octree_lod_distance(uint32_t volume_id, float lod_distance);
-	void invalidate_volume_mesh_requests(uint32_t volume_id);
-	void request_block_mesh(uint32_t volume_id, const BlockMeshInput &input);
-	// TODO Add parameter to skip stream loading
-	void request_block_load(uint32_t volume_id, Vector3i block_pos, int lod, bool request_instances);
-	void request_block_generate(
-			uint32_t volume_id, Vector3i block_pos, int lod, std::shared_ptr<AsyncDependencyTracker> tracker);
-	void request_all_stream_blocks(uint32_t volume_id);
-	void request_voxel_block_save(
-			uint32_t volume_id, std::shared_ptr<VoxelBufferInternal> voxels, Vector3i block_pos, int lod);
-	void request_instance_block_save(
-			uint32_t volume_id, std::unique_ptr<InstanceBlockData> instances, Vector3i block_pos, int lod);
+
 	void remove_volume(uint32_t volume_id);
 	bool is_volume_valid(uint32_t volume_id) const;
 
-	// TODO Rename functions to C convention
+	std::shared_ptr<PriorityDependency::ViewersData> get_shared_viewers_data_from_default_world() const {
+		return _world.shared_priority_dependency;
+	}
+
 	uint32_t add_viewer();
 	void remove_viewer(uint32_t viewer_id);
 	void set_viewer_position(uint32_t viewer_id, Vector3 position);
@@ -147,20 +128,27 @@ public:
 		_world.viewers.for_each_with_id(f);
 	}
 
-	void push_time_spread_task(ITimeSpreadTask *task);
+	void push_main_thread_time_spread_task(
+			ITimeSpreadTask *task, TimeSpreadTaskRunner::Priority priority = TimeSpreadTaskRunner::PRIORITY_NORMAL);
 	int get_main_thread_time_budget_usec() const;
+	void set_main_thread_time_budget_usec(unsigned int usec);
 
-	void push_progressive_task(IProgressiveTask *task);
+	// Allows/disallows building Mesh resources from inside threads. Depends on Godot's efficiency at doing so, and
+	// which renderer is used. For example, the OpenGL renderer does not support this well, but the Vulkan one should.
+	void set_threaded_mesh_resource_building_enabled(bool enable);
+	// This should be fast and safe to access from multiple threads.
+	bool is_threaded_mesh_resource_building_enabled() const;
+
+	void push_main_thread_progressive_task(IProgressiveTask *task);
 
 	// Thread-safe.
 	void push_async_task(IThreadedTask *task);
 	// Thread-safe.
 	void push_async_tasks(Span<IThreadedTask *> tasks);
-
-	// Gets by how much voxels must be padded with neighbors in order to be polygonized properly
-	// void get_min_max_block_padding(
-	// 		bool blocky_enabled, bool smooth_enabled,
-	// 		unsigned int &out_min_padding, unsigned int &out_max_padding) const;
+	// Thread-safe.
+	void push_async_io_task(IThreadedTask *task);
+	// Thread-safe.
+	void push_async_io_tasks(Span<IThreadedTask *> tasks);
 
 	void process();
 	void wait_and_clear_all_tasks(bool warn);
@@ -181,29 +169,23 @@ public:
 			unsigned int thread_count;
 			unsigned int active_threads;
 			unsigned int tasks;
-
-			Dictionary to_dict() {
-				Dictionary d;
-				d["tasks"] = tasks;
-				d["active_threads"] = active_threads;
-				d["thread_count"] = thread_count;
-				return d;
-			}
 		};
 
-		ThreadPoolStats streaming;
 		ThreadPoolStats general;
 		int generation_tasks;
 		int streaming_tasks;
 		int meshing_tasks;
 		int main_thread_tasks;
-
-		Dictionary to_dict();
 	};
 
 	Stats get_stats() const;
 
+	// TODO Should be private, but can't because `memdelete<T>` would be unable to call it otherwise...
+	~VoxelServer();
+
 private:
+	VoxelServer(ThreadsConfig threads_config);
+
 	// Since we are going to send data to tasks running in multiple threads, a few strategies are in place:
 	//
 	// - Copy the data for each task. This is suitable for simple information that doesn't change after scheduling.
@@ -217,17 +199,7 @@ private:
 	//   then a new instance is created and old references are left to "die out".
 
 	struct Volume {
-		VolumeType type;
 		VolumeCallbacks callbacks;
-		Transform3D transform;
-		Ref<VoxelStream> stream;
-		Ref<VoxelGenerator> generator;
-		Ref<VoxelMesher> mesher;
-		uint32_t render_block_size = 16;
-		uint32_t data_block_size = 16;
-		float octree_lod_distance = 0;
-		std::shared_ptr<StreamingDependency> stream_dependency;
-		std::shared_ptr<MeshBlockTask::MeshingDependency> meshing_dependency;
 	};
 
 	struct World {
@@ -238,46 +210,69 @@ private:
 		std::shared_ptr<PriorityDependency::ViewersData> shared_priority_dependency;
 	};
 
-	void init_priority_dependency(
-			PriorityDependency &dep, Vector3i block_position, uint8_t lod, const Volume &volume, int block_size);
-
 	// TODO multi-world support in the future
 	World _world;
 
-	// Pool specialized in file I/O
-	ThreadedTaskRunner _streaming_thread_pool;
-	// Pool for every other task
 	ThreadedTaskRunner _general_thread_pool;
 	// For tasks that can only run on the main thread and be spread out over frames
 	TimeSpreadTaskRunner _time_spread_task_runner;
-	int _main_thread_time_budget_usec = 8000;
+	unsigned int _main_thread_time_budget_usec = 8000;
 	ProgressiveTaskRunner _progressive_task_runner;
 
 	FileLocker _file_locker;
+
+	bool _threaded_mesh_resource_building_enabled = false;
 };
 
 struct VoxelFileLockerRead {
-	VoxelFileLockerRead(String path) : _path(path) {
-		VoxelServer::get_singleton()->get_file_locker().lock_read(path);
+	VoxelFileLockerRead(const std::string &path) : _path(path) {
+		VoxelServer::get_singleton().get_file_locker().lock_read(path);
 	}
 
 	~VoxelFileLockerRead() {
-		VoxelServer::get_singleton()->get_file_locker().unlock(_path);
+		VoxelServer::get_singleton().get_file_locker().unlock(_path);
 	}
 
-	String _path;
+	std::string _path;
 };
 
 struct VoxelFileLockerWrite {
-	VoxelFileLockerWrite(String path) : _path(path) {
-		VoxelServer::get_singleton()->get_file_locker().lock_write(path);
+	VoxelFileLockerWrite(const std::string &path) : _path(path) {
+		VoxelServer::get_singleton().get_file_locker().lock_write(path);
 	}
 
 	~VoxelFileLockerWrite() {
-		VoxelServer::get_singleton()->get_file_locker().unlock(_path);
+		VoxelServer::get_singleton().get_file_locker().unlock(_path);
 	}
 
-	String _path;
+	std::string _path;
+};
+
+// Helper class to store tasks and schedule them in a single batch
+class BufferedTaskScheduler {
+public:
+	static BufferedTaskScheduler &get_for_current_thread();
+
+	inline void push_main_task(IThreadedTask *task) {
+		_main_tasks.push_back(task);
+	}
+
+	inline void push_io_task(IThreadedTask *task) {
+		_io_tasks.push_back(task);
+	}
+
+	inline void flush() {
+		VoxelServer::get_singleton().push_async_tasks(to_span(_main_tasks));
+		VoxelServer::get_singleton().push_async_io_tasks(to_span(_io_tasks));
+		_main_tasks.clear();
+		_io_tasks.clear();
+	}
+
+	// No destructor! This does not take ownership, it is only a helper. Flush should be called after each use.
+
+private:
+	std::vector<IThreadedTask *> _main_tasks;
+	std::vector<IThreadedTask *> _io_tasks;
 };
 
 } // namespace zylann::voxel

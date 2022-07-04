@@ -1,9 +1,11 @@
 #ifndef VOXEL_GENERATOR_GRAPH_H
 #define VOXEL_GENERATOR_GRAPH_H
 
+#include "../../util/thread/rw_lock.h"
 #include "../voxel_generator.h"
 #include "program_graph.h"
 #include "voxel_graph_runtime.h"
+
 #include <memory>
 
 class Image;
@@ -40,6 +42,7 @@ public:
 		NODE_DISTANCE_2D,
 		NODE_DISTANCE_3D,
 		NODE_CLAMP,
+		NODE_CLAMP_C,
 		NODE_MIX,
 		NODE_REMAP,
 		NODE_SMOOTHSTEP,
@@ -68,6 +71,9 @@ public:
 		NODE_FAST_NOISE_2_3D,
 #endif
 		NODE_OUTPUT_SINGLE_TEXTURE,
+		NODE_EXPRESSION,
+		NODE_POWI, // pow(x, constant positive integer)
+		NODE_POW, // pow(x, y)
 
 		NODE_TYPE_COUNT
 	};
@@ -109,6 +115,10 @@ public:
 
 	Variant get_node_param(uint32_t node_id, uint32_t param_index) const;
 	void set_node_param(uint32_t node_id, uint32_t param_index, Variant value);
+
+	static bool get_expression_variables(std::string_view code, std::vector<std::string_view> &vars);
+	void get_expression_node_inputs(uint32_t node_id, std::vector<std::string> &out_names) const;
+	void set_expression_node_inputs(uint32_t node_id, PackedStringArray names);
 
 	Variant get_node_default_input(uint32_t node_id, uint32_t input_index) const;
 	void set_node_default_input(uint32_t node_id, uint32_t input_index, Variant value);
@@ -163,17 +173,18 @@ public:
 
 	void bake_sphere_bumpmap(Ref<Image> im, float ref_radius, float min_height, float max_height);
 	void bake_sphere_normalmap(Ref<Image> im, float ref_radius, float strength);
+	String generate_shader();
 
 	// Internal
 
-	VoxelGraphRuntime::CompilationResult compile();
+	VoxelGraphRuntime::CompilationResult compile(bool debug);
 	bool is_good() const;
 
 	void generate_set(Span<float> in_x, Span<float> in_y, Span<float> in_z);
 
 	// Returns state from the last generator used in the current thread
 	static const VoxelGraphRuntime::State &get_last_state_from_current_thread();
-	static Span<const int> get_last_execution_map_debug_from_current_thread();
+	static Span<const uint32_t> get_last_execution_map_debug_from_current_thread();
 
 	bool try_get_output_port_address(ProgramGraph::PortLocation port, uint32_t &out_address) const;
 
@@ -182,13 +193,24 @@ public:
 	// Debug
 
 	math::Interval debug_analyze_range(Vector3i min_pos, Vector3i max_pos, bool optimize_execution_map) const;
-	float debug_measure_microseconds_per_voxel(bool singular);
+
+	struct NodeProfilingInfo {
+		uint32_t node_id;
+		uint32_t microseconds;
+	};
+
+	float debug_measure_microseconds_per_voxel(bool singular, std::vector<NodeProfilingInfo> *node_profiling_info);
+
 	void debug_load_waves_preset();
 
 	// Editor
 
 #ifdef TOOLS_ENABLED
 	void get_configuration_warnings(TypedArray<String> &out_warnings) const override;
+
+	// Gets a hash that attempts to only change if the output of the graph is different.
+	// This is computed from the editable graph data, not the compiled result.
+	uint64_t get_output_graph_hash() const;
 #endif
 
 private:
@@ -210,6 +232,7 @@ private:
 	float _b_generate_single(Vector3 pos);
 	Vector2 _b_debug_analyze_range(Vector3 min_pos, Vector3 max_pos) const;
 	Dictionary _b_compile();
+	float _b_debug_measure_microseconds_per_voxel(bool singular);
 
 	struct WeightOutput {
 		unsigned int layer_index;
@@ -280,6 +303,9 @@ private:
 
 	static thread_local Cache _cache;
 };
+
+ProgramGraph::Node *create_node_internal(ProgramGraph &graph, VoxelGeneratorGraph::NodeTypeID type_id, Vector2 position,
+		uint32_t id, bool create_default_instances);
 
 } // namespace zylann::voxel
 

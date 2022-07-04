@@ -2,6 +2,7 @@
 #define VOXEL_BUFFER_GD_H
 
 #include "voxel_buffer_internal.h"
+#include <core/object/ref_counted.h>
 #include <memory>
 
 class Image;
@@ -148,17 +149,12 @@ public:
 
 	// Metadata
 
-	Variant get_block_metadata() const {
-		return _buffer->get_block_metadata();
-	}
+	Variant get_block_metadata() const;
 	void set_block_metadata(Variant meta);
 
-	Variant get_voxel_metadata(Vector3i pos) const {
-		return _buffer->get_voxel_metadata(pos);
-	}
-	void set_voxel_metadata(Vector3i pos, Variant meta) {
-		_buffer->set_voxel_metadata(pos, meta);
-	}
+	Variant get_voxel_metadata(Vector3i pos) const;
+	void set_voxel_metadata(Vector3i pos, Variant meta);
+
 	void for_each_voxel_metadata(const Callable &callback) const;
 	void for_each_voxel_metadata_in_area(const Callable &callback, Vector3i min_pos, Vector3i max_pos);
 	void copy_voxel_metadata_in_area(
@@ -170,6 +166,9 @@ public:
 	// Debugging
 
 	Ref<Image> debug_print_sdf_to_image_top_down();
+	static Ref<Image> debug_print_sdf_to_image_top_down(const VoxelBufferInternal &vb);
+	Array debug_print_sdf_y_slices(float scale) const;
+	Ref<Image> debug_print_sdf_y_slice(float scale, int y) const;
 
 private:
 	void _b_deprecated_optimize();

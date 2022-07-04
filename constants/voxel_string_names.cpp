@@ -15,6 +15,11 @@ void VoxelStringNames::destroy_singleton() {
 	g_singleton = nullptr;
 }
 
+const VoxelStringNames &VoxelStringNames::get_singleton() {
+	CRASH_COND(g_singleton == nullptr);
+	return *g_singleton;
+}
+
 VoxelStringNames::VoxelStringNames() {
 	_emerge_block = StaticCString::create("_emerge_block");
 	_immerge_block = StaticCString::create("_immerge_block");
@@ -32,6 +37,10 @@ VoxelStringNames::VoxelStringNames() {
 	u_transition_mask = StaticCString::create("u_transition_mask");
 	u_block_local_transform = StaticCString::create("u_block_local_transform");
 	u_lod_fade = StaticCString::create("u_lod_fade");
+
+#ifdef DEBUG_ENABLED
+	_voxel_debug_vt_position = StaticCString::create("_voxel_debug_vt_position");
+#endif
 }
 
 } // namespace zylann::voxel

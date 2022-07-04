@@ -1,5 +1,5 @@
 #include "voxel_instance_generator.h"
-#include "../../util/funcs.h"
+#include "../../util/container_funcs.h"
 #include "../../util/profiling.h"
 
 #include <core/core_string_names.h>
@@ -36,7 +36,7 @@ inline float get_triangle_area(Vector3 p0, Vector3 p1, Vector3 p2) {
 void VoxelInstanceGenerator::generate_transforms(std::vector<Transform3D> &out_transforms, Vector3i grid_position,
 		int lod_index, int layer_id, Array surface_arrays, const Transform3D &block_local_transform, UpMode up_mode,
 		uint8_t octant_mask, float block_size) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	if (surface_arrays.size() < ArrayMesh::ARRAY_VERTEX && surface_arrays.size() < ArrayMesh::ARRAY_NORMAL &&
 			surface_arrays.size() < ArrayMesh::ARRAY_INDEX) {
@@ -86,7 +86,7 @@ void VoxelInstanceGenerator::generate_transforms(std::vector<Transform3D> &out_t
 
 	// Pick random points
 	{
-		VOXEL_PROFILE_SCOPE_NAMED("mesh to points");
+		ZN_PROFILE_SCOPE_NAMED("mesh to points");
 
 		// PackedVector3Array::Read vertices_r = vertices.read();
 		// PackedVector3Array::Read normals_r = normals.read();
@@ -99,7 +99,7 @@ void VoxelInstanceGenerator::generate_transforms(std::vector<Transform3D> &out_t
 				// I had to use `uint64` and clamp it because floats can't contain `0xffffffff` accurately. Instead
 				// it results in `0x100000000`, one unit above.
 				const uint32_t density_u32 =
-						math::min(uint64_t(0xffffffff * (_density / MAX_DENSITY)), uint64_t(0xffffffff));
+						math::min(uint64_t(double(0xffffffff) * _density / MAX_DENSITY), uint64_t(0xffffffff));
 				const int size = vertices.size();
 				for (int i = 0; i < size; ++i) {
 					// TODO We could actually generate indexes and pick those,
@@ -222,7 +222,7 @@ void VoxelInstanceGenerator::generate_transforms(std::vector<Transform3D> &out_t
 	// This is done so some octants can be filled with user-edited data instead,
 	// because mesh size may not necessarily match data block size
 	if ((octant_mask & 0xff) != 0xff) {
-		VOXEL_PROFILE_SCOPE_NAMED("octant filter");
+		ZN_PROFILE_SCOPE_NAMED("octant filter");
 		const float h = block_size / 2.f;
 		for (unsigned int i = 0; i < vertex_cache.size(); ++i) {
 			const Vector3 &pos = vertex_cache[i];
@@ -239,7 +239,7 @@ void VoxelInstanceGenerator::generate_transforms(std::vector<Transform3D> &out_t
 
 	// Filter out by noise
 	if (_noise.is_valid()) {
-		VOXEL_PROFILE_SCOPE_NAMED("noise filter");
+		ZN_PROFILE_SCOPE_NAMED("noise filter");
 
 		noise_cache.clear();
 
@@ -609,7 +609,7 @@ bool VoxelInstanceGenerator::get_random_rotation() const {
 	return _random_rotation;
 }
 
-void VoxelInstanceGenerator::set_noise(Ref<FastNoiseLite> noise) {
+void VoxelInstanceGenerator::set_noise(Ref<Noise> noise) {
 	if (_noise == noise) {
 		return;
 	}
@@ -625,7 +625,7 @@ void VoxelInstanceGenerator::set_noise(Ref<FastNoiseLite> noise) {
 	emit_changed();
 }
 
-Ref<FastNoiseLite> VoxelInstanceGenerator::get_noise() const {
+Ref<Noise> VoxelInstanceGenerator::get_noise() const {
 	return _noise;
 }
 

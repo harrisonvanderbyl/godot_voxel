@@ -1,8 +1,10 @@
 #ifndef VOXEL_MESHER_BLOCKY_H
 #define VOXEL_MESHER_BLOCKY_H
 
+#include "../../util/thread/rw_lock.h"
 #include "../voxel_mesher.h"
 #include "voxel_blocky_library.h"
+
 #include <core/object/ref_counted.h>
 #include <scene/resources/mesh.h>
 #include <vector>
@@ -15,7 +17,6 @@ class VoxelMesherBlocky : public VoxelMesher {
 	GDCLASS(VoxelMesherBlocky, VoxelMesher)
 
 public:
-	static const unsigned int MAX_MATERIALS = 8; // Arbitrary. Tweak if needed.
 	static const int PADDING = 1;
 
 	VoxelMesherBlocky();
@@ -38,6 +39,8 @@ public:
 	bool supports_lod() const override {
 		return false;
 	}
+
+	Ref<Material> get_material_by_index(unsigned int index) const override;
 
 	// Using std::vector because they make this mesher twice as fast than Godot Vectors.
 	// See why: https://github.com/godotengine/godot/issues/24731
@@ -63,6 +66,10 @@ public:
 	void get_configuration_warnings(TypedArray<String> &out_warnings) const override;
 #endif
 
+	bool is_generating_collision_surface() const override {
+		return true;
+	}
+
 protected:
 	static void _bind_methods();
 
@@ -74,7 +81,7 @@ private:
 	};
 
 	struct Cache {
-		FixedArray<Arrays, MAX_MATERIALS> arrays_per_material;
+		std::vector<Arrays> arrays_per_material;
 	};
 
 	// Parameters

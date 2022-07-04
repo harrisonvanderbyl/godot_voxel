@@ -1,7 +1,9 @@
 #include "region_file.h"
 #include "../../streams/voxel_block_serializer.h"
-#include "../../util/macros.h"
+#include "../../util/godot/funcs.h"
+#include "../../util/log.h"
 #include "../../util/profiling.h"
+#include "../../util/string_funcs.h"
 #include "../file_utils.h"
 #include <core/io/file_access.h>
 #include <algorithm>
@@ -13,8 +15,7 @@ const uint8_t FORMAT_VERSION = 3;
 
 // Version 2 is like 3, but does not include any format information
 const uint8_t FORMAT_VERSION_LEGACY_2 = 2;
-
-const uint8_t FORMAT_VERSION_LEGACY_1 = 1;
+//const uint8_t FORMAT_VERSION_LEGACY_1 = 1;
 
 const char *FORMAT_REGION_MAGIC = "VXR_";
 const uint32_t MAGIC_AND_VERSION_SIZE = 4 + 1;
@@ -62,45 +63,42 @@ static uint32_t get_header_size_v3(const RegionFormat &format) {
 }
 
 static bool save_header(
-		FileAccess *f, uint8_t version, const RegionFormat &format, const std::vector<RegionBlockInfo> &block_infos) {
-	ERR_FAIL_COND_V(f == nullptr, false);
+		FileAccess &f, uint8_t version, const RegionFormat &format, const std::vector<RegionBlockInfo> &block_infos) {
+	f.seek(0);
 
-	f->seek(0);
+	f.store_buffer(reinterpret_cast<const uint8_t *>(FORMAT_REGION_MAGIC), 4);
+	f.store_8(version);
 
-	f->store_buffer(reinterpret_cast<const uint8_t *>(FORMAT_REGION_MAGIC), 4);
-	f->store_8(version);
+	f.store_8(format.block_size_po2);
 
-	f->store_8(format.block_size_po2);
-
-	f->store_8(format.region_size.x);
-	f->store_8(format.region_size.y);
-	f->store_8(format.region_size.z);
+	f.store_8(format.region_size.x);
+	f.store_8(format.region_size.y);
+	f.store_8(format.region_size.z);
 
 	for (unsigned int i = 0; i < format.channel_depths.size(); ++i) {
-		f->store_8(format.channel_depths[i]);
+		f.store_8(format.channel_depths[i]);
 	}
 
-	f->store_16(format.sector_size);
+	f.store_16(format.sector_size);
 
 	if (format.has_palette) {
-		f->store_8(0xff);
+		f.store_8(0xff);
 		for (unsigned int i = 0; i < format.palette.size(); ++i) {
 			const Color8 c = format.palette[i];
-			f->store_8(c.r);
-			f->store_8(c.g);
-			f->store_8(c.b);
-			f->store_8(c.a);
+			f.store_8(c.r);
+			f.store_8(c.g);
+			f.store_8(c.b);
+			f.store_8(c.a);
 		}
 	} else {
-		f->store_8(0x00);
+		f.store_8(0x00);
 	}
 
-	// TODO Deal with endianess
-	f->store_buffer(
-			reinterpret_cast<const uint8_t *>(block_infos.data()), block_infos.size() * sizeof(RegionBlockInfo));
+	// TODO Deal with endianess, this should be little-endian
+	f.store_buffer(reinterpret_cast<const uint8_t *>(block_infos.data()), block_infos.size() * sizeof(RegionBlockInfo));
 
-	size_t blocks_begin_offset = f->get_position();
 #ifdef DEBUG_ENABLED
+	const size_t blocks_begin_offset = f.get_position();
 	CRASH_COND(blocks_begin_offset != get_header_size_v3(format));
 #endif
 
@@ -108,42 +106,41 @@ static bool save_header(
 }
 
 static bool load_header(
-		FileAccess *f, uint8_t &out_version, RegionFormat &out_format, std::vector<RegionBlockInfo> &out_block_infos) {
-	ERR_FAIL_COND_V(f == nullptr, false);
+		FileAccess &f, uint8_t &out_version, RegionFormat &out_format, std::vector<RegionBlockInfo> &out_block_infos) {
+	ERR_FAIL_COND_V(f.get_position() != 0, false);
+	ERR_FAIL_COND_V(f.get_length() < MAGIC_AND_VERSION_SIZE, false);
 
-	ERR_FAIL_COND_V(f->get_position() != 0, false);
-	ERR_FAIL_COND_V(f->get_length() < MAGIC_AND_VERSION_SIZE, false);
-
-	FixedArray<char, 5> magic(0);
-	ERR_FAIL_COND_V(f->get_buffer(reinterpret_cast<uint8_t *>(magic.data()), 4) != 4, false);
+	FixedArray<char, 5> magic;
+	fill(magic, '\0');
+	ERR_FAIL_COND_V(f.get_buffer(reinterpret_cast<uint8_t *>(magic.data()), 4) != 4, false);
 	ERR_FAIL_COND_V(strcmp(magic.data(), FORMAT_REGION_MAGIC) != 0, false);
 
-	const uint8_t version = f->get_8();
+	const uint8_t version = f.get_8();
 
 	if (version == FORMAT_VERSION) {
-		out_format.block_size_po2 = f->get_8();
+		out_format.block_size_po2 = f.get_8();
 
-		out_format.region_size.x = f->get_8();
-		out_format.region_size.y = f->get_8();
-		out_format.region_size.z = f->get_8();
+		out_format.region_size.x = f.get_8();
+		out_format.region_size.y = f.get_8();
+		out_format.region_size.z = f.get_8();
 
 		for (unsigned int i = 0; i < out_format.channel_depths.size(); ++i) {
-			const uint8_t d = f->get_8();
+			const uint8_t d = f.get_8();
 			ERR_FAIL_COND_V(d >= VoxelBufferInternal::DEPTH_COUNT, false);
 			out_format.channel_depths[i] = static_cast<VoxelBufferInternal::Depth>(d);
 		}
 
-		out_format.sector_size = f->get_16();
+		out_format.sector_size = f.get_16();
 
-		const uint8_t palette_size = f->get_8();
+		const uint8_t palette_size = f.get_8();
 		if (palette_size == 0xff) {
 			out_format.has_palette = true;
 			for (unsigned int i = 0; i < out_format.palette.size(); ++i) {
 				Color8 c;
-				c.r = f->get_8();
-				c.g = f->get_8();
-				c.b = f->get_8();
-				c.a = f->get_8();
+				c.r = f.get_8();
+				c.g = f.get_8();
+				c.b = f.get_8();
+				c.a = f.get_8();
 				out_format.palette[i] = c;
 			}
 
@@ -161,7 +158,7 @@ static bool load_header(
 
 	// TODO Deal with endianess
 	const size_t blocks_len = out_block_infos.size() * sizeof(RegionBlockInfo);
-	const size_t read_size = f->get_buffer((uint8_t *)out_block_infos.data(), blocks_len);
+	const size_t read_size = f.get_buffer((uint8_t *)out_block_infos.data(), blocks_len);
 	ERR_FAIL_COND_V(read_size != blocks_len, false);
 
 	return true;
@@ -173,7 +170,7 @@ RegionFile::RegionFile() {
 	// Defaults
 	_header.format.block_size_po2 = 4;
 	_header.format.region_size = Vector3i(16, 16, 16);
-	_header.format.channel_depths.fill(VoxelBufferInternal::DEPTH_8_BIT);
+	fill(_header.format.channel_depths, VoxelBufferInternal::DEPTH_8_BIT);
 	_header.format.sector_size = 512;
 }
 
@@ -189,13 +186,14 @@ Error RegionFile::open(const String &fpath, bool create_if_not_found) {
 	Error file_error;
 	// Open existing file for read and write permissions. This should not create the file if it doesn't exist.
 	// Note, there is no read-only mode supported, because there was no need for it yet.
-	FileAccess *f = FileAccess::open(fpath, FileAccess::READ_WRITE, &file_error);
+	Ref<FileAccess> f = FileAccess::open(fpath, FileAccess::READ_WRITE, &file_error);
 	if (file_error != OK) {
 		if (create_if_not_found) {
 			CRASH_COND(f != nullptr);
 
 			// Checking folders, needed for region "forests"
-			const Error dir_err = check_directory_created_using_file_locker(fpath.get_base_dir());
+			const CharString fpath_base_dir = fpath.get_base_dir().utf8();
+			const Error dir_err = check_directory_created_using_file_locker(fpath_base_dir.get_data());
 			if (dir_err != OK) {
 				return ERR_CANT_CREATE;
 			}
@@ -208,15 +206,15 @@ Error RegionFile::open(const String &fpath, bool create_if_not_found) {
 			}
 
 			_header.version = FORMAT_VERSION;
-			ERR_FAIL_COND_V(save_header(f) == false, ERR_FILE_CANT_WRITE);
+			ERR_FAIL_COND_V(save_header(**f) == false, ERR_FILE_CANT_WRITE);
 
 		} else {
 			return file_error;
 		}
 	} else {
-		const Error header_error = load_header(f);
+		CRASH_COND(f.is_null());
+		const Error header_error = load_header(**f);
 		if (header_error != OK) {
-			memdelete(f);
 			return header_error;
 		}
 	}
@@ -265,19 +263,18 @@ Error RegionFile::open(const String &fpath, bool create_if_not_found) {
 }
 
 Error RegionFile::close() {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 	Error err = OK;
 	if (_file_access != nullptr) {
 		if (_header_modified) {
 			_file_access->seek(MAGIC_AND_VERSION_SIZE);
-			if (!save_header(_file_access)) {
+			if (!save_header(**_file_access)) {
 				// TODO Need to do a big pass on these errors codes so we can return meaningful ones...
 				// Godot codes are quite limited
 				err = ERR_FILE_CANT_WRITE;
 			}
 		}
-		memdelete(_file_access);
-		_file_access = nullptr;
+		_file_access.unref();
 	}
 	_sectors.clear();
 	return err;
@@ -313,7 +310,7 @@ bool RegionFile::is_valid_block_position(const Vector3 position) const {
 
 Error RegionFile::load_block(Vector3i position, VoxelBufferInternal &out_block) {
 	ERR_FAIL_COND_V(_file_access == nullptr, ERR_FILE_CANT_READ);
-	FileAccess *f = _file_access;
+	FileAccess &f = **_file_access;
 
 	ERR_FAIL_COND_V(!is_valid_block_position(position), ERR_INVALID_PARAMETER);
 	const unsigned int lut_index = get_block_index_in_header(position);
@@ -333,10 +330,10 @@ Error RegionFile::load_block(Vector3i position, VoxelBufferInternal &out_block) 
 	const unsigned int sector_index = block_info.get_sector_index();
 	const unsigned int block_begin = _blocks_begin_offset + sector_index * _header.format.sector_size;
 
-	f->seek(block_begin);
+	f.seek(block_begin);
 
-	unsigned int block_data_size = f->get_32();
-	CRASH_COND(f->eof_reached());
+	unsigned int block_data_size = f.get_32();
+	CRASH_COND(f.eof_reached());
 
 	ERR_FAIL_COND_V_MSG(!BlockSerializer::decompress_and_deserialize(f, block_data_size, out_block), ERR_PARSE_ERROR,
 			String("Failed to read block {0}").format(varray(position)));
@@ -349,7 +346,7 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 	ERR_FAIL_COND_V(!is_valid_block_position(position), ERR_INVALID_PARAMETER);
 
 	ERR_FAIL_COND_V(_file_access == nullptr, ERR_FILE_CANT_WRITE);
-	FileAccess *f = _file_access;
+	FileAccess &f = **_file_access;
 
 	// We should be allowed to migrate before write operations
 	if (_header.version != FORMAT_VERSION) {
@@ -364,21 +361,21 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 		// The block isn't in the file yet, append at the end
 
 		const unsigned int end_offset = _blocks_begin_offset + _sectors.size() * _header.format.sector_size;
-		f->seek(end_offset);
-		const unsigned int block_offset = f->get_position();
+		f.seek(end_offset);
+		const unsigned int block_offset = f.get_position();
 		// Check position matches the sectors rule
 		CRASH_COND((block_offset - _blocks_begin_offset) % _header.format.sector_size != 0);
 
 		BlockSerializer::SerializeResult res = BlockSerializer::serialize_and_compress(block);
 		ERR_FAIL_COND_V(!res.success, ERR_INVALID_PARAMETER);
-		f->store_32(res.data.size());
+		f.store_32(res.data.size());
 		const unsigned int written_size = sizeof(uint32_t) + res.data.size();
-		f->store_buffer(res.data.data(), res.data.size());
+		f.store_buffer(res.data.data(), res.data.size());
 
-		const unsigned int end_pos = f->get_position();
+		const unsigned int end_pos = f.get_position();
 		CRASH_COND_MSG(written_size != (end_pos - block_offset),
 				String("written_size: {0}, block_offset: {1}, end_pos: {2}")
-						.format(varray(written_size, end_pos, block_offset)));
+						.format(varray(written_size, block_offset, end_pos)));
 		pad_to_sector_size(f);
 
 		block_info.set_sector_index((block_offset - _blocks_begin_offset) / _header.format.sector_size);
@@ -402,7 +399,7 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 		BlockSerializer::SerializeResult res = BlockSerializer::serialize_and_compress(block);
 		ERR_FAIL_COND_V(!res.success, ERR_INVALID_PARAMETER);
 		const std::vector<uint8_t> &data = res.data;
-		const int written_size = sizeof(uint32_t) + data.size();
+		const size_t written_size = sizeof(uint32_t) + data.size();
 
 		const int new_sector_count = get_sector_count_from_bytes(written_size);
 		CRASH_COND(new_sector_count < 1);
@@ -416,13 +413,13 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 				_header_modified = true;
 			}
 
-			const int block_offset = _blocks_begin_offset + old_sector_index * _header.format.sector_size;
-			f->seek(block_offset);
+			const size_t block_offset = _blocks_begin_offset + old_sector_index * _header.format.sector_size;
+			f.seek(block_offset);
 
-			f->store_32(data.size());
-			f->store_buffer(data.data(), data.size());
+			f.store_32(data.size());
+			f.store_buffer(data.data(), data.size());
 
-			int end_pos = f->get_position();
+			const size_t end_pos = f.get_position();
 			CRASH_COND(written_size != (end_pos - block_offset));
 
 		} else {
@@ -434,13 +431,13 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 			// This also shifts the rest of the file so the freed sectors may get re-occupied.
 			remove_sectors_from_block(position, old_sector_count);
 
-			const int block_offset = _blocks_begin_offset + _sectors.size() * _header.format.sector_size;
-			f->seek(block_offset);
+			const size_t block_offset = _blocks_begin_offset + _sectors.size() * _header.format.sector_size;
+			f.seek(block_offset);
 
-			f->store_32(data.size());
-			f->store_buffer(data.data(), data.size());
+			f.store_32(data.size());
+			f.store_buffer(data.data(), data.size());
 
-			const int end_pos = f->get_position();
+			const size_t end_pos = f.get_position();
 			CRASH_COND(written_size != (end_pos - block_offset));
 
 			pad_to_sector_size(f);
@@ -459,21 +456,22 @@ Error RegionFile::save_block(Vector3i position, VoxelBufferInternal &block) {
 	return OK;
 }
 
-void RegionFile::pad_to_sector_size(FileAccess *f) {
-	int rpos = f->get_position() - _blocks_begin_offset;
+void RegionFile::pad_to_sector_size(FileAccess &f) {
+	const int64_t rpos = f.get_position() - _blocks_begin_offset;
 	if (rpos == 0) {
 		return;
 	}
 	CRASH_COND(rpos < 0);
-	int pad = _header.format.sector_size - (rpos - 1) % _header.format.sector_size - 1;
-	for (int i = 0; i < pad; ++i) {
+	const int64_t pad = int64_t(_header.format.sector_size) - (rpos - 1) % int64_t(_header.format.sector_size) - 1;
+	CRASH_COND(pad < 0);
+	for (int64_t i = 0; i < pad; ++i) {
 		// Virtual function called many times, hmmmm...
-		f->store_8(0);
+		f.store_8(0);
 	}
 }
 
 void RegionFile::remove_sectors_from_block(Vector3i block_pos, unsigned int p_sector_count) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
 	// Removes sectors from a block, starting from the last ones.
 	// So if a block has 5 sectors and we remove 2, the first 3 will be preserved.
@@ -482,7 +480,7 @@ void RegionFile::remove_sectors_from_block(Vector3i block_pos, unsigned int p_se
 	CRASH_COND(_file_access == nullptr);
 	CRASH_COND(p_sector_count <= 0);
 
-	FileAccess *f = _file_access;
+	FileAccess &f = **_file_access;
 	const unsigned int sector_size = _header.format.sector_size;
 	const unsigned int old_end_offset = _blocks_begin_offset + _sectors.size() * sector_size;
 
@@ -507,12 +505,12 @@ void RegionFile::remove_sectors_from_block(Vector3i block_pos, unsigned int p_se
 	// TODO There might be a faster way to shrink a file
 	// Erase sectors from file
 	while (src_offset < old_end_offset) {
-		f->seek(src_offset);
-		size_t read_bytes = f->get_buffer(temp.data(), sector_size);
+		f.seek(src_offset);
+		const size_t read_bytes = f.get_buffer(temp.data(), sector_size);
 		CRASH_COND(read_bytes != sector_size); // Corrupted file
 
-		f->seek(dst_offset);
-		f->store_buffer(temp.data(), sector_size);
+		f.seek(dst_offset);
+		f.store_buffer(temp.data(), sector_size);
 
 		src_offset += sector_size;
 		dst_offset += sector_size;
@@ -546,19 +544,19 @@ void RegionFile::remove_sectors_from_block(Vector3i block_pos, unsigned int p_se
 	}
 }
 
-bool RegionFile::save_header(FileAccess *f) {
+bool RegionFile::save_header(FileAccess &f) {
 	// We should be allowed to migrate before write operations.
 	if (_header.version != FORMAT_VERSION) {
 		ERR_FAIL_COND_V(migrate_to_latest(f) == false, false);
 	}
 	ERR_FAIL_COND_V(!zylann::voxel::save_header(f, _header.version, _header.format, _header.blocks), false);
-	_blocks_begin_offset = f->get_position();
+	_blocks_begin_offset = f.get_position();
 	_header_modified = false;
 	return true;
 }
 
-bool RegionFile::migrate_from_v2_to_v3(FileAccess *f, RegionFormat &format) {
-	PRINT_VERBOSE(String("Migrating region file {0} from v2 to v3").format(varray(_file_path)));
+bool RegionFile::migrate_from_v2_to_v3(FileAccess &f, RegionFormat &format) {
+	ZN_PRINT_VERBOSE(zylann::format("Migrating region file {} from v2 to v3", _file_path));
 
 	// We can migrate if we know in advance what format the file should contain.
 	ERR_FAIL_COND_V_MSG(format.block_size_po2 == 0, false, "Cannot migrate without knowing the correct format");
@@ -572,10 +570,10 @@ bool RegionFile::migrate_from_v2_to_v3(FileAccess *f, RegionFormat &format) {
 
 	const unsigned int extra_bytes_needed = new_header_size - old_header_size;
 
-	f->seek(MAGIC_AND_VERSION_SIZE);
+	f.seek(MAGIC_AND_VERSION_SIZE);
 	insert_bytes(f, extra_bytes_needed);
 
-	f->seek(0);
+	f.seek(0);
 
 	// Set version because otherwise `save_header` will attempt to migrate again causing stack-overflow
 	_header.version = FORMAT_VERSION;
@@ -583,8 +581,7 @@ bool RegionFile::migrate_from_v2_to_v3(FileAccess *f, RegionFormat &format) {
 	return save_header(f);
 }
 
-bool RegionFile::migrate_to_latest(FileAccess *f) {
-	ERR_FAIL_COND_V(f == nullptr, false);
+bool RegionFile::migrate_to_latest(FileAccess &f) {
 	ERR_FAIL_COND_V(_file_path.is_empty(), false);
 
 	uint8_t version = _header.version;
@@ -610,9 +607,9 @@ bool RegionFile::migrate_to_latest(FileAccess *f) {
 	return true;
 }
 
-Error RegionFile::load_header(FileAccess *f) {
+Error RegionFile::load_header(FileAccess &f) {
 	ERR_FAIL_COND_V(!zylann::voxel::load_header(f, _header.version, _header.format, _header.blocks), ERR_PARSE_ERROR);
-	_blocks_begin_offset = f->get_position();
+	_blocks_begin_offset = f.get_position();
 	return OK;
 }
 
@@ -650,8 +647,8 @@ bool RegionFile::has_block(unsigned int index) const {
 void RegionFile::debug_check() {
 	ERR_FAIL_COND(!is_open());
 	ERR_FAIL_COND(_file_access == nullptr);
-	FileAccess *f = _file_access;
-	const size_t file_len = f->get_length();
+	FileAccess &f = **_file_access;
+	const size_t file_len = f.get_length();
 
 	for (unsigned int lut_index = 0; lut_index < _header.blocks.size(); ++lut_index) {
 		const RegionBlockInfo &block_info = _header.blocks[lut_index];
@@ -662,18 +659,17 @@ void RegionFile::debug_check() {
 		const unsigned int sector_index = block_info.get_sector_index();
 		const unsigned int block_begin = _blocks_begin_offset + sector_index * _header.format.sector_size;
 		if (block_begin >= file_len) {
-			print_line(String("ERROR: LUT {0} ({1}): offset {2} is larger than file size {3}")
-							   .format(varray(lut_index, position, block_begin, SIZE_T_TO_VARIANT(file_len))));
+			ZN_PRINT_ERROR(format("ERROR: LUT {} ({}): offset {} is larger than file size {}", lut_index, position,
+					block_begin, file_len));
 			continue;
 		}
-		f->seek(block_begin);
-		const size_t block_data_size = f->get_32();
-		const size_t pos = f->get_position();
+		f.seek(block_begin);
+		const size_t block_data_size = f.get_32();
+		const size_t pos = f.get_position();
 		const size_t remaining_size = file_len - pos;
 		if (block_data_size > remaining_size) {
-			print_line(String("ERROR: LUT {0} ({1}): block size at offset {2} is larger than remaining size {3}")
-							   .format(varray(lut_index, position, SIZE_T_TO_VARIANT(block_data_size),
-									   SIZE_T_TO_VARIANT(remaining_size))));
+			ZN_PRINT_ERROR(format("ERROR: LUT {} ({}): block size at offset {} is larger than remaining size {}",
+					lut_index, position, block_data_size, remaining_size));
 		}
 	}
 }

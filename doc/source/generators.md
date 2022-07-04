@@ -182,7 +182,7 @@ There are likely variants of this to obtain different results.
 
 ### Usage with blocky voxels
 
-It is possible to use this generator with `VoxelMesherBlocky` by using an `OutputType` node instead of `OutputSDF`.
+It is possible to use this generator with `VoxelMesherBlocky` by using an `OutputType` node instead of `OutputSDF`. However, `VoxelMesherBlocky` expects voxels to be IDs, not SDF values.
 
 The simplest example is to pick any existing SDF generator, and replace `OutputSDF` with a `Select` node connected to an `OutputType`. The idea is to choose between the ID of two different voxel types (like air or stone) if the SDF value is above or below a threshold.
 
@@ -192,7 +192,7 @@ If more variety is needed, `Select` nodes can be chained to combine multiple lay
 
 ![Example screenshot of a blocky heightmap with two biomes made with a graph generator](images/voxel_graph_blocky_biome.png)
 
-`Select` creates a "cut" between the two possible values, and it may be desirable to have some sort of transition. While this isn't possible without a lot of different types for each value of the gradient (usually done with a shader), it is however easy to add a bit of white noise to the threshold. This reproduces a similar "dithered" transition, as can be seen in Minecraft between sand and dirt.
+`Select` creates a "cut" between the two possible values, and it may be desirable to have some sort of transition. While this isn't possible with `VoxelMesherBlocky` without a lot of different types for each value of the gradient (usually done with a shader), it is however easy to add a bit of noise to the threshold. This reproduces a similar "dithered" transition, as can be seen in Minecraft between sand and dirt.
 
 ![Example screenshot of a blocky heightmap with two biomes and dithering](images/voxel_graph_blocky_biome_dithering.png)
 
@@ -362,6 +362,7 @@ Clamp                 | If `x` is lower than `min`, returns `min`. If `x` is hig
 Distance2D            | Returns the distance between two 2D points `(x0, y0)` and `(x1, y1)`.
 Distance3D            | Returns the distance between two 3D points `(x0, y0, z0)` and `(x1, y1, z1)`.
 Divide                | Returns the result of `a / b`
+Expression            | Evaluates a math expression. Variable names can be written as inputs of the node. Some functions can be used, but they must be supported by the graph in the first place. Available functions: `sin(x)`, `floor(x)`, `abs(x)`, `sqrt(x)`, `fract(x)`, `stepify(x,step)`, `wrap(x,length)`, `min(a,b)`, `max(a,b)`, `clamp(x,min,max)`, `lerp(a,b,ratio)`
 Floor                 | Returns the result of `floor(x)`, the nearest integer that is equal or lower to `x`.
 Fract                 | Returns the decimal part of `x`. The result is always positive regardless of sign.
 Max                   | Returns the highest value between `a` and `b`.
@@ -369,6 +370,8 @@ Min                   | Returns the lowest value between `a` and `b`.
 Mix                   | Interpolates between `a` and `b`, using parameter value `t`. If `t` is `0`, `a` will be returned. If `t` is `1`, `b` will be returned. If `t` is beyond the `[0..1]` range, the return value will be an extrapolation.
 Normalize3D           | Returns the normalized coordinates of the given `(x, y, z)` 3D vector, such that the length of the output vector is 1.
 Multiply              | Returns the result of `a * b`
+Pow                   | Returns the result of the power function (`x ^ power`). It can be quite slow.
+Powi                  | Returns the result of the power function (`x ^ power`), where the exponent is a constant positive integer. Faster than `Pow`.
 Remap                 | For an input value `x` in the range `[min0, max0]`, converts linearly into the `[min1, max1]` range. For example, if `x` is `min0`, then `min1` will be returned. If `x` is `max0`, then `max1` will be returned. If `x` is beyond the `[min0, max0]` range, the result will be an extrapolation.
 Select                | If `t` is lower than `threshold`, returns `a`. Otherwise, returns `b`. 
 Sin                   | Returns the result of `sin(x)`
@@ -414,3 +417,26 @@ Node name             | Description
 Curve                 | Returns the value of a custom `curve` at coordinate `x`, where `x` is in the range `[0..1]`. The `curve` is specified with a `Curve` resource.
 Image2D               | Returns the value of the red channel of an `image` at coordinates `(x, y)`, where `x` and `y` are in pixels and the return value is in the range `[0..1]` (or more if the image has an HDR format). If coordinates are outside the image, they will be wrapped around. No filtering is performed. The image must have an uncompressed format.
 
+
+Modifiers
+-----------
+
+Modifiers are generators that affect a limited region of the volume. They can stack on top of base generated voxels or other modifiers, and affect the final result. This is a workflow that mostly serves if your world has a finite size, and you want to set up specific shapes of the landscape in a non-destructive way from the editor.
+
+!!! note
+    This feature is only implemented with `VoxelLodTerrain` at the moment, and only works to sculpt smooth voxels. It is in early stages so it is quite limited.
+
+Modifiers can be added with nodes as child of the terrain. `VoxelModifierSphere` adds or subtracts a sphere, while `VoxelModifierMesh` adds or subtracts a mesh. For the latter, the mesh must be baked into an SDF volume first, using the `VoxelMeshSDF` resource.
+
+Because modifiers are part of the procedural generation stack, destructive edits will always override them. If a block is edited, modifiers cannot affect it. It is then assumed that such edits would come from players at runtime, and that modifiers don't change.
+
+
+Caching
+---------
+
+Generators are designed to be deterministic: if the same area is generated twice, the result must be the same. This means, ultimately, we only need to store edited voxels (aka "destructive" editing), while non-edited regions can be recomputed on the fly. Even if you want to access one voxel and it happens to be in a non-edited location, then the generator will be called just to obtain that voxel.
+
+However, if a generator is too expensive or not expected to run this way, it may be desirable to store the output in memory so that querying the same area again picks up the cached data.
+
+By default, `VoxelTerrain` caches blocks in memory until they get far from any viewer. `VoxelLodTerrain` does not cache blocks by default. There is no option yet to change that behavior.
+It is also possible to tell a `VoxelGenerator` to save its outputs to the current `VoxelStream`, if any is setup. However, these blocks will act as edited ones, so they will behave as if it was changes done destructively.

@@ -3,11 +3,14 @@
 
 #include "../generators/voxel_generator.h"
 #include "../meshers/voxel_mesher.h"
+#include "../server/streaming_dependency.h"
 #include "../streams/voxel_stream.h"
 
 #include <scene/3d/node_3d.h>
 
 namespace zylann::voxel {
+
+class VoxelTool;
 
 // Base class for voxel volumes
 class VoxelNode : public Node3D {
@@ -34,6 +37,11 @@ public:
 
 	virtual void restart_stream();
 	virtual void remesh_all_blocks();
+
+	virtual uint32_t get_volume_id() const;
+	virtual std::shared_ptr<StreamingDependency> get_streaming_dependency() const;
+
+	virtual Ref<VoxelTool> get_voxel_tool();
 
 #ifdef TOOLS_ENABLED
 	virtual TypedArray<String> get_configuration_warnings() const override;

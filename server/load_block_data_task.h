@@ -1,6 +1,7 @@
 #ifndef LOAD_BLOCK_DATA_TASK_H
 #define LOAD_BLOCK_DATA_TASK_H
 
+#include "../util/memory.h"
 #include "../util/tasks/threaded_task.h"
 #include "priority_dependency.h"
 #include "streaming_dependency.h"
@@ -11,7 +12,7 @@ class LoadBlockDataTask : public IThreadedTask {
 public:
 	LoadBlockDataTask(uint32_t p_volume_id, Vector3i p_block_pos, uint8_t p_lod, uint8_t p_block_size,
 			bool p_request_instances, std::shared_ptr<StreamingDependency> p_stream_dependency,
-			PriorityDependency p_priority_dependency);
+			PriorityDependency p_priority_dependency, bool generate_cache_data);
 
 	~LoadBlockDataTask();
 
@@ -25,7 +26,7 @@ public:
 private:
 	PriorityDependency _priority_dependency;
 	std::shared_ptr<VoxelBufferInternal> _voxels;
-	std::unique_ptr<InstanceBlockData> _instances;
+	UniquePtr<InstanceBlockData> _instances;
 	Vector3i _position; // In data blocks of the specified lod
 	uint32_t _volume_id;
 	uint8_t _lod;
@@ -33,9 +34,10 @@ private:
 	bool _has_run = false;
 	bool _too_far = false;
 	bool _request_instances = false;
-	bool _request_voxels = false;
+	//bool _request_voxels = false;
 	bool _max_lod_hint = false;
-	bool _fallback_on_generator = false;
+	bool _generate_cache_data = true;
+	bool _requested_generator_task = false;
 	std::shared_ptr<StreamingDependency> _stream_dependency;
 };
 

@@ -2,10 +2,9 @@
 #define VOXEL_MESH_BLOCK_TASK_H
 
 #include "../constants/voxel_constants.h"
-#include "../generators/voxel_generator.h"
-#include "../meshers/voxel_mesher.h"
 #include "../storage/voxel_buffer_internal.h"
 #include "../util/tasks/threaded_task.h"
+#include "meshing_dependency.h"
 #include "priority_dependency.h"
 
 namespace zylann::voxel {
@@ -13,12 +12,6 @@ namespace zylann::voxel {
 // Asynchronous task generating a mesh from voxel blocks and their neighbors, in a particular volume
 class MeshBlockTask : public IThreadedTask {
 public:
-	struct MeshingDependency {
-		Ref<VoxelMesher> mesher;
-		Ref<VoxelGenerator> generator;
-		bool valid = true;
-	};
-
 	MeshBlockTask();
 	~MeshBlockTask();
 
@@ -35,17 +28,26 @@ public:
 	//FixedArray<uint8_t, VoxelBufferInternal::MAX_CHANNELS> channel_depths;
 	Vector3i position; // In mesh blocks of the specified lod
 	uint32_t volume_id;
-	uint8_t lod;
-	uint8_t blocks_count;
-	uint8_t data_block_size;
+	uint8_t lod_index = 0;
+	uint8_t blocks_count = 0;
+	uint8_t data_block_size = 0;
+	bool collision_hint = false;
+	bool lod_hint = false;
 	PriorityDependency priority_dependency;
 	std::shared_ptr<MeshingDependency> meshing_dependency;
+	std::shared_ptr<VoxelDataLodMap> data;
 
 private:
 	bool _has_run = false;
 	bool _too_far = false;
+	bool _has_mesh_resource = false;
 	VoxelMesher::Output _surfaces_output;
+	Ref<Mesh> _mesh;
+	std::vector<uint8_t> _mesh_material_indices; // Indexed by mesh surface
 };
+
+Ref<ArrayMesh> build_mesh(Span<const VoxelMesher::Output::Surface> surfaces, Mesh::PrimitiveType primitive, int flags,
+		std::vector<uint8_t> &surface_indices);
 
 } // namespace zylann::voxel
 

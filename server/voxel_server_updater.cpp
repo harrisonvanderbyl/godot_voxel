@@ -1,5 +1,5 @@
 #include "voxel_server_updater.h"
-#include "../util/macros.h"
+#include "../util/log.h"
 #include "voxel_server.h"
 
 // Needed for doing `Node *root = SceneTree::get_root()`, Window* is forward-declared
@@ -10,7 +10,7 @@ namespace zylann::voxel {
 bool g_updater_created = false;
 
 VoxelServerUpdater::VoxelServerUpdater() {
-	PRINT_VERBOSE("Creating VoxelServerUpdater");
+	ZN_PRINT_VERBOSE("Creating VoxelServerUpdater");
 	set_process(true);
 	g_updater_created = true;
 }
@@ -35,6 +35,8 @@ void VoxelServerUpdater::ensure_existence(SceneTree *st) {
 	}
 	VoxelServerUpdater *u = memnew(VoxelServerUpdater);
 	u->set_name("VoxelServerUpdater_dont_touch_this");
+	// TODO This can fail (for example if `Node::data.blocked > 0` while in `_ready()`) but Godot offers no API to check
+	// anything. So if this fail, the node will leak.
 	root->add_child(u);
 }
 
@@ -42,11 +44,11 @@ void VoxelServerUpdater::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_PROCESS:
 			// To workaround the absence of API to have a custom server processing in the main loop
-			zylann::voxel::VoxelServer::get_singleton()->process();
+			zylann::voxel::VoxelServer::get_singleton().process();
 			break;
 
 		case NOTIFICATION_PREDELETE:
-			PRINT_VERBOSE("Deleting VoxelServerUpdater");
+			ZN_PRINT_VERBOSE("Deleting VoxelServerUpdater");
 			break;
 
 		default:

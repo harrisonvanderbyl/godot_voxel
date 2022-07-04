@@ -3,15 +3,24 @@
 #include "../generators/graph/range_utility.h"
 #include "../generators/graph/voxel_generator_graph.h"
 #include "../meshers/blocky/voxel_blocky_library.h"
+#include "../meshers/cubes/voxel_mesher_cubes.h"
+#include "../storage/voxel_buffer_gd.h"
 #include "../storage/voxel_data_map.h"
+#include "../storage/voxel_metadata_variant.h"
 #include "../streams/instance_data.h"
 #include "../streams/region/region_file.h"
 #include "../streams/region/voxel_stream_region_files.h"
 #include "../streams/voxel_block_serializer.h"
+#include "../streams/voxel_block_serializer_gd.h"
+#include "../util/container_funcs.h"
+#include "../util/expression_parser.h"
 #include "../util/flat_map.h"
 #include "../util/godot/funcs.h"
 #include "../util/island_finder.h"
 #include "../util/math/box3i.h"
+#include "../util/noise/fast_noise_lite/fast_noise_lite.h"
+#include "../util/string_funcs.h"
+#include "../util/tasks/threaded_task_runner.h"
 #include "test_octree.h"
 #include "testing.h"
 
@@ -20,8 +29,10 @@
 #endif
 
 #include <core/io/dir_access.h>
+#include <core/io/stream_peer.h>
 #include <core/string/print_string.h>
 #include <core/templates/hash_map.h>
+#include <modules/noise/fastnoise_lite.h>
 
 namespace zylann::voxel::tests {
 
@@ -56,26 +67,24 @@ void test_box3i_intersects() {
 void test_box3i_for_inner_outline() {
 	const Box3i box(-1, 2, 3, 8, 6, 5);
 
-	HashMap<Vector3i, bool, Vector3iHasher> expected_coords;
+	std::unordered_map<Vector3i, bool> expected_coords;
 	const Box3i inner_box = box.padded(-1);
 	box.for_each_cell([&expected_coords, inner_box](Vector3i pos) {
 		if (!inner_box.contains(pos)) {
-			expected_coords.set(pos, false);
+			expected_coords.insert({ pos, false });
 		}
 	});
 
 	box.for_inner_outline([&expected_coords](Vector3i pos) {
-		bool *b = expected_coords.getptr(pos);
-		ZYLANN_TEST_ASSERT_MSG(b != nullptr, "Position must be on the inner outline");
-		ZYLANN_TEST_ASSERT_MSG(*b == false, "Position must be unique");
-		*b = true;
+		auto it = expected_coords.find(pos);
+		ZYLANN_TEST_ASSERT_MSG(it != expected_coords.end(), "Position must be on the inner outline");
+		ZYLANN_TEST_ASSERT_MSG(it->second == false, "Position must be unique");
+		it->second = true;
 	});
 
-	const Vector3i *key = nullptr;
-	while ((key = expected_coords.next(key))) {
-		const bool *v = expected_coords.getptr(*key);
-		ZYLANN_TEST_ASSERT(v != nullptr);
-		ZYLANN_TEST_ASSERT_MSG(*v, "All expected coordinates must have been found");
+	for (auto it = expected_coords.begin(); it != expected_coords.end(); ++it) {
+		const bool v = it->second;
+		ZYLANN_TEST_ASSERT_MSG(v, "All expected coordinates must have been found");
 	}
 }
 
@@ -342,9 +351,103 @@ void test_voxel_graph_generator_default_graph_compilation() {
 	Ref<VoxelGeneratorGraph> generator;
 	generator.instantiate();
 	generator->load_plane_preset();
-	VoxelGraphRuntime::CompilationResult result = generator->compile();
+	VoxelGraphRuntime::CompilationResult result = generator->compile(false);
 	ZYLANN_TEST_ASSERT_MSG(
 			result.success, String("Failed to compile graph: {0}: {1}").format(varray(result.node_id, result.message)));
+}
+
+void test_voxel_graph_generator_expressions() {
+	{
+		Ref<VoxelGeneratorGraph> generator;
+		generator.instantiate();
+
+		const uint32_t in_x = generator->create_node(VoxelGeneratorGraph::NODE_INPUT_X, Vector2(0, 0));
+		const uint32_t in_y = generator->create_node(VoxelGeneratorGraph::NODE_INPUT_Y, Vector2(0, 0));
+		const uint32_t in_z = generator->create_node(VoxelGeneratorGraph::NODE_INPUT_Z, Vector2(0, 0));
+		const uint32_t out_sdf = generator->create_node(VoxelGeneratorGraph::NODE_OUTPUT_SDF, Vector2(0, 0));
+		const uint32_t n_expression = generator->create_node(VoxelGeneratorGraph::NODE_EXPRESSION, Vector2());
+
+		generator->set_node_param(n_expression, 0, "0.1 * x + 0.2 * z + min(y, 0.5)");
+		PackedStringArray var_names;
+		var_names.push_back("x");
+		var_names.push_back("y");
+		var_names.push_back("z");
+		generator->set_expression_node_inputs(n_expression, var_names);
+
+		generator->add_connection(in_x, 0, n_expression, 0);
+		generator->add_connection(in_y, 0, n_expression, 1);
+		generator->add_connection(in_z, 0, n_expression, 2);
+		generator->add_connection(n_expression, 0, out_sdf, 0);
+
+		VoxelGraphRuntime::CompilationResult result = generator->compile(false);
+		ZYLANN_TEST_ASSERT_MSG(result.success,
+				String("Failed to compile graph: {0}: {1}").format(varray(result.node_id, result.message)));
+	}
+	Ref<ZN_FastNoiseLite> zfnl;
+	{
+		Ref<VoxelGeneratorGraph> generator;
+		generator.instantiate();
+
+		/*                       SdfPreview
+								/
+			  X --- FastNoise2D
+				\/              \
+				/\               \
+			  Z --- Noise2D ----- a+b+c --- OutputSDF
+								 /
+			  Y --- SdfPlane ----
+		*/
+
+		const uint32_t in_x = generator->create_node(VoxelGeneratorGraph::NODE_INPUT_X, Vector2(0, 0));
+		const uint32_t in_y = generator->create_node(VoxelGeneratorGraph::NODE_INPUT_Y, Vector2(0, 0));
+		const uint32_t in_z = generator->create_node(VoxelGeneratorGraph::NODE_INPUT_Z, Vector2(0, 0));
+		const uint32_t out_sdf = generator->create_node(VoxelGeneratorGraph::NODE_OUTPUT_SDF, Vector2(0, 0));
+		const uint32_t n_fn2d = generator->create_node(VoxelGeneratorGraph::NODE_FAST_NOISE_2D, Vector2());
+		const uint32_t n_n2d = generator->create_node(VoxelGeneratorGraph::NODE_NOISE_2D, Vector2());
+		const uint32_t n_plane = generator->create_node(VoxelGeneratorGraph::NODE_SDF_PLANE, Vector2());
+		const uint32_t n_expr = generator->create_node(VoxelGeneratorGraph::NODE_EXPRESSION, Vector2());
+		const uint32_t n_preview = generator->create_node(VoxelGeneratorGraph::NODE_SDF_PREVIEW, Vector2());
+
+		generator->set_node_param(n_expr, 0, "a+b+c");
+		PackedStringArray var_names;
+		var_names.push_back("a");
+		var_names.push_back("b");
+		var_names.push_back("c");
+		generator->set_expression_node_inputs(n_expr, var_names);
+
+		zfnl.instantiate();
+		generator->set_node_param(n_fn2d, 0, zfnl);
+
+		Ref<FastNoiseLite> fnl;
+		fnl.instantiate();
+		generator->set_node_param(n_n2d, 0, fnl);
+
+		generator->add_connection(in_x, 0, n_fn2d, 0);
+		generator->add_connection(in_x, 0, n_n2d, 0);
+		generator->add_connection(in_z, 0, n_fn2d, 1);
+		generator->add_connection(in_z, 0, n_n2d, 1);
+		generator->add_connection(in_y, 0, n_plane, 0);
+		generator->add_connection(n_fn2d, 0, n_expr, 0);
+		generator->add_connection(n_fn2d, 0, n_preview, 0);
+		generator->add_connection(n_n2d, 0, n_expr, 1);
+		generator->add_connection(n_plane, 0, n_expr, 2);
+		generator->add_connection(n_expr, 0, out_sdf, 0);
+
+		VoxelGraphRuntime::CompilationResult result = generator->compile(true);
+		ZYLANN_TEST_ASSERT_MSG(result.success,
+				String("Failed to compile graph: {0}: {1}").format(varray(result.node_id, result.message)));
+
+		generator->generate_single(Vector3i(1, 2, 3), VoxelBufferInternal::CHANNEL_SDF);
+
+		std::vector<VoxelGeneratorGraph::NodeProfilingInfo> profiling_info;
+		generator->debug_measure_microseconds_per_voxel(false, &profiling_info);
+		ZYLANN_TEST_ASSERT(profiling_info.size() >= 4);
+		for (const VoxelGeneratorGraph::NodeProfilingInfo &info : profiling_info) {
+			ZYLANN_TEST_ASSERT(generator->has_node(info.node_id));
+		}
+	}
+	ZYLANN_TEST_ASSERT(zfnl.is_valid());
+	ZYLANN_TEST_ASSERT(zfnl->reference_get_count() == 1);
 }
 
 void test_voxel_graph_generator_texturing() {
@@ -369,7 +472,7 @@ void test_voxel_graph_generator_texturing() {
 	const uint32_t in_y = generator->create_node(VoxelGeneratorGraph::NODE_INPUT_Y, Vector2(0, 0));
 	const uint32_t in_z = generator->create_node(VoxelGeneratorGraph::NODE_INPUT_Z, Vector2(0, 0));
 	const uint32_t out_sdf = generator->create_node(VoxelGeneratorGraph::NODE_OUTPUT_SDF, Vector2(0, 0));
-	const uint32_t n_clamp = generator->create_node(VoxelGeneratorGraph::NODE_CLAMP, Vector2(0, 0));
+	const uint32_t n_clamp = generator->create_node(VoxelGeneratorGraph::NODE_CLAMP_C, Vector2(0, 0));
 	const uint32_t n_sub0 = generator->create_node(VoxelGeneratorGraph::NODE_SUBTRACT, Vector2(0, 0));
 	const uint32_t n_sub1 = generator->create_node(VoxelGeneratorGraph::NODE_SUBTRACT, Vector2(0, 0));
 	const uint32_t out_weight0 = generator->create_node(VoxelGeneratorGraph::NODE_OUTPUT_WEIGHT, Vector2(0, 0));
@@ -389,7 +492,7 @@ void test_voxel_graph_generator_texturing() {
 	generator->add_connection(n_sub1, 0, out_weight0, 0);
 	generator->add_connection(n_clamp, 0, out_weight1, 0);
 
-	VoxelGraphRuntime::CompilationResult compilation_result = generator->compile();
+	VoxelGraphRuntime::CompilationResult compilation_result = generator->compile(false);
 	ZYLANN_TEST_ASSERT_MSG(compilation_result.success,
 			String("Failed to compile graph: {0}: {1}")
 					.format(varray(compilation_result.node_id, compilation_result.message)));
@@ -1036,17 +1139,74 @@ void test_block_serializer() {
 	voxel_buffer.fill_area(43, Vector3i(2, 3, 4), Vector3i(6, 6, 6), 0);
 	voxel_buffer.fill_area(44, Vector3i(1, 2, 3), Vector3i(5, 5, 5), 1);
 
-	// Serialize
-	BlockSerializer::SerializeResult result = BlockSerializer::serialize_and_compress(voxel_buffer);
-	ZYLANN_TEST_ASSERT(result.success);
-	std::vector<uint8_t> data = result.data;
+	{
+		// Serialize without compression wrapper
+		BlockSerializer::SerializeResult result = BlockSerializer::serialize(voxel_buffer);
+		ZYLANN_TEST_ASSERT(result.success);
+		std::vector<uint8_t> data = result.data;
 
-	// Deserialize
-	VoxelBufferInternal deserialized_voxel_buffer;
-	ZYLANN_TEST_ASSERT(BlockSerializer::decompress_and_deserialize(to_span_const(data), deserialized_voxel_buffer));
+		ZYLANN_TEST_ASSERT(data.size() > 0);
+		ZYLANN_TEST_ASSERT(data[0] == BlockSerializer::BLOCK_FORMAT_VERSION);
 
-	// Must be equal
-	ZYLANN_TEST_ASSERT(voxel_buffer.equals(deserialized_voxel_buffer));
+		// Deserialize
+		VoxelBufferInternal deserialized_voxel_buffer;
+		ZYLANN_TEST_ASSERT(BlockSerializer::deserialize(to_span_const(data), deserialized_voxel_buffer));
+
+		// Must be equal
+		ZYLANN_TEST_ASSERT(voxel_buffer.equals(deserialized_voxel_buffer));
+	}
+	{
+		// Serialize
+		BlockSerializer::SerializeResult result = BlockSerializer::serialize_and_compress(voxel_buffer);
+		ZYLANN_TEST_ASSERT(result.success);
+		std::vector<uint8_t> data = result.data;
+
+		ZYLANN_TEST_ASSERT(data.size() > 0);
+
+		// Deserialize
+		VoxelBufferInternal deserialized_voxel_buffer;
+		ZYLANN_TEST_ASSERT(BlockSerializer::decompress_and_deserialize(to_span_const(data), deserialized_voxel_buffer));
+
+		// Must be equal
+		ZYLANN_TEST_ASSERT(voxel_buffer.equals(deserialized_voxel_buffer));
+	}
+}
+
+void test_block_serializer_stream_peer() {
+	// Create an example buffer
+	const Vector3i block_size(8, 9, 10);
+	Ref<gd::VoxelBuffer> voxel_buffer;
+	voxel_buffer.instantiate();
+	voxel_buffer->create(block_size.x, block_size.y, block_size.z);
+	voxel_buffer->fill_area(42, Vector3i(1, 2, 3), Vector3i(5, 5, 5), 0);
+	voxel_buffer->fill_area(43, Vector3i(2, 3, 4), Vector3i(6, 6, 6), 0);
+	voxel_buffer->fill_area(44, Vector3i(1, 2, 3), Vector3i(5, 5, 5), 1);
+
+	Ref<StreamPeerBuffer> peer;
+	peer.instantiate();
+	//peer->clear();
+
+	Ref<gd::VoxelBlockSerializer> serializer;
+	serializer.instantiate();
+	const int size = serializer->serialize(peer, voxel_buffer, true);
+
+	PackedByteArray data_array = peer->get_data_array();
+
+	// Client
+
+	Ref<gd::VoxelBuffer> voxel_buffer2;
+	voxel_buffer2.instantiate();
+
+	Ref<StreamPeerBuffer> peer2;
+	peer2.instantiate();
+	peer2->set_data_array(data_array);
+
+	Ref<gd::VoxelBlockSerializer> serializer2;
+	serializer2.instantiate();
+
+	serializer2->deserialize(peer2, voxel_buffer2, size, true);
+
+	ZYLANN_TEST_ASSERT(voxel_buffer2->get_buffer().equals(voxel_buffer->get_buffer()));
 }
 
 void test_region_file() {
@@ -1263,7 +1423,7 @@ void test_run_blocky_random_tick() {
 
 		const Box3i world_blocks_box(-4, -4, -4, 8, 8, 8);
 		world_blocks_box.for_each_cell_zxy([&map, &model_buffer](Vector3i block_pos) {
-			std::shared_ptr<VoxelBufferInternal> buffer = gd_make_shared<VoxelBufferInternal>();
+			std::shared_ptr<VoxelBufferInternal> buffer = make_shared_instance<VoxelBufferInternal>();
 			buffer->create(model_buffer.get_size());
 			buffer->copy_from(model_buffer);
 			map.set_block_buffer(block_pos, buffer, false);
@@ -1348,10 +1508,11 @@ void test_flat_map() {
 			ZYLANN_TEST_ASSERT_V(sorted_pairs.size() == map.size(), false);
 			for (size_t i = 0; i < sorted_pairs.size(); ++i) {
 				const Pair expected_pair = sorted_pairs[i];
-				Value value;
 				ZYLANN_TEST_ASSERT_V(map.has(expected_pair.key), false);
-				ZYLANN_TEST_ASSERT_V(map.find(expected_pair.key, value), false);
-				ZYLANN_TEST_ASSERT_V(value == expected_pair.value, false);
+				ZYLANN_TEST_ASSERT_V(map.find(expected_pair.key) != nullptr, false);
+				const Value *value = map.find(expected_pair.key);
+				ZYLANN_TEST_ASSERT_V(value != nullptr, false);
+				ZYLANN_TEST_ASSERT_V(*value == expected_pair.value, false);
 			}
 			return true;
 		}
@@ -1423,6 +1584,640 @@ void test_flat_map() {
 	}
 }
 
+void test_expression_parser() {
+	using namespace ExpressionParser;
+
+	{
+		Result result = parse("", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("   ", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("42", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root != nullptr);
+		ZYLANN_TEST_ASSERT(result.root->type == Node::NUMBER);
+		const NumberNode &nn = static_cast<NumberNode &>(*result.root);
+		ZYLANN_TEST_ASSERT(Math::is_equal_approx(nn.value, 42.f));
+	}
+	{
+		Result result = parse("()", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("((()))", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("42)", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_UNEXPECTED_TOKEN);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("(42)", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root != nullptr);
+		ZYLANN_TEST_ASSERT(result.root->type == Node::NUMBER);
+		const NumberNode &nn = static_cast<NumberNode &>(*result.root);
+		ZYLANN_TEST_ASSERT(Math::is_equal_approx(nn.value, 42.f));
+	}
+	{
+		Result result = parse("(", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_UNCLOSED_PARENTHESIS);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("(666", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_UNCLOSED_PARENTHESIS);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("1+", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_MISSING_OPERAND_ARGUMENTS);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("++", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_MISSING_OPERAND_ARGUMENTS);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("1 2 3", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_MULTIPLE_OPERANDS);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("???", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_INVALID_TOKEN);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		Result result = parse("1+2-3*4/5", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root != nullptr);
+		ZYLANN_TEST_ASSERT(result.root->type == Node::NUMBER);
+		const NumberNode &nn = static_cast<NumberNode &>(*result.root);
+		ZYLANN_TEST_ASSERT(Math::is_equal_approx(nn.value, 0.6f));
+	}
+	{
+		Result result = parse("1*2-3/4+5", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root != nullptr);
+		ZYLANN_TEST_ASSERT(result.root->type == Node::NUMBER);
+		const NumberNode &nn = static_cast<NumberNode &>(*result.root);
+		ZYLANN_TEST_ASSERT(Math::is_equal_approx(nn.value, 6.25f));
+	}
+	{
+		Result result = parse("(5 - 3)^2 + 2.5/(4 + 6)", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root != nullptr);
+		ZYLANN_TEST_ASSERT(result.root->type == Node::NUMBER);
+		const NumberNode &nn = static_cast<NumberNode &>(*result.root);
+		ZYLANN_TEST_ASSERT(Math::is_equal_approx(nn.value, 4.25f));
+	}
+	{
+		/*
+					-
+				   / \
+				  /   \
+				 /     \
+				*       -
+			   / \     / \
+			  4   ^   c   d
+				 / \
+				+   2
+			   / \
+			  a   b
+		*/
+		UniquePtr<VariableNode> node_a = make_unique_instance<VariableNode>("a");
+		UniquePtr<VariableNode> node_b = make_unique_instance<VariableNode>("b");
+		UniquePtr<OperatorNode> node_add =
+				make_unique_instance<OperatorNode>(OperatorNode::ADD, std::move(node_a), std::move(node_b));
+		UniquePtr<NumberNode> node_two = make_unique_instance<NumberNode>(2);
+		UniquePtr<OperatorNode> node_power =
+				make_unique_instance<OperatorNode>(OperatorNode::POWER, std::move(node_add), std::move(node_two));
+		UniquePtr<NumberNode> node_four = make_unique_instance<NumberNode>(4);
+		UniquePtr<OperatorNode> node_mul =
+				make_unique_instance<OperatorNode>(OperatorNode::MULTIPLY, std::move(node_four), std::move(node_power));
+		UniquePtr<VariableNode> node_c = make_unique_instance<VariableNode>("c");
+		UniquePtr<VariableNode> node_d = make_unique_instance<VariableNode>("d");
+		UniquePtr<OperatorNode> node_sub =
+				make_unique_instance<OperatorNode>(OperatorNode::SUBTRACT, std::move(node_c), std::move(node_d));
+		UniquePtr<OperatorNode> expected_root =
+				make_unique_instance<OperatorNode>(OperatorNode::SUBTRACT, std::move(node_mul), std::move(node_sub));
+
+		Result result = parse("4*(a+b)^2-(c-d)", Span<const Function>());
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root != nullptr);
+		// {
+		// 	const std::string s1 = tree_to_string(*expected_root, Span<const Function>());
+		// 	print_line(String(s1.c_str()));
+		// 	print_line("---");
+		// 	const std::string s2 = tree_to_string(*result.root, Span<const Function>());
+		// 	print_line(String(s2.c_str()));
+		// }
+		ZYLANN_TEST_ASSERT(is_tree_equal(*result.root, *expected_root, Span<const Function>()));
+	}
+	{
+		FixedArray<Function, 2> functions;
+
+		{
+			Function f;
+			f.name = "sqrt";
+			f.id = 0;
+			f.argument_count = 1;
+			f.func = [](Span<const float> args) { //
+				return Math::sqrt(args[0]);
+			};
+			functions[0] = f;
+		}
+		{
+			Function f;
+			f.name = "clamp";
+			f.id = 1;
+			f.argument_count = 3;
+			f.func = [](Span<const float> args) { //
+				return math::clamp(args[0], args[1], args[2]);
+			};
+			functions[1] = f;
+		}
+
+		Result result = parse("clamp(sqrt(20 + sqrt(25)), 1, 2.0 * 2.0)", to_span_const(functions));
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_NONE);
+		ZYLANN_TEST_ASSERT(result.root != nullptr);
+		ZYLANN_TEST_ASSERT(result.root->type == Node::NUMBER);
+		const NumberNode &nn = static_cast<NumberNode &>(*result.root);
+		ZYLANN_TEST_ASSERT(Math::is_equal_approx(nn.value, 4.f));
+	}
+	{
+		FixedArray<Function, 2> functions;
+
+		const unsigned int F_SIN = 0;
+		const unsigned int F_CLAMP = 1;
+
+		{
+			Function f;
+			f.name = "sin";
+			f.id = F_SIN;
+			f.argument_count = 1;
+			f.func = [](Span<const float> args) { //
+				return Math::sin(args[0]);
+			};
+			functions[0] = f;
+		}
+		{
+			Function f;
+			f.name = "clamp";
+			f.id = F_CLAMP;
+			f.argument_count = 3;
+			f.func = [](Span<const float> args) { //
+				return math::clamp(args[0], args[1], args[2]);
+			};
+			functions[1] = f;
+		}
+
+		Result result = parse("x+sin(y, clamp(z, 0, 1))", to_span_const(functions));
+
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_TOO_MANY_ARGUMENTS);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		FixedArray<Function, 1> functions;
+
+		const unsigned int F_CLAMP = 1;
+
+		{
+			Function f;
+			f.name = "clamp";
+			f.id = F_CLAMP;
+			f.argument_count = 3;
+			f.func = [](Span<const float> args) { //
+				return math::clamp(args[0], args[1], args[2]);
+			};
+			functions[0] = f;
+		}
+
+		Result result = parse("clamp(z,", to_span_const(functions));
+
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_EXPECTED_ARGUMENT);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		FixedArray<Function, 1> functions;
+
+		const unsigned int F_CLAMP = 1;
+
+		{
+			Function f;
+			f.name = "clamp";
+			f.id = F_CLAMP;
+			f.argument_count = 3;
+			f.func = [](Span<const float> args) { //
+				return math::clamp(args[0], args[1], args[2]);
+			};
+			functions[0] = f;
+		}
+
+		Result result = parse("clamp(z)", to_span_const(functions));
+
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_TOO_FEW_ARGUMENTS);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+	{
+		FixedArray<Function, 1> functions;
+
+		const unsigned int F_CLAMP = 1;
+
+		{
+			Function f;
+			f.name = "clamp";
+			f.id = F_CLAMP;
+			f.argument_count = 3;
+			f.func = [](Span<const float> args) { //
+				return math::clamp(args[0], args[1], args[2]);
+			};
+			functions[0] = f;
+		}
+
+		Result result = parse("clamp(z,)", to_span_const(functions));
+
+		ZYLANN_TEST_ASSERT(result.error.id == ERROR_EXPECTED_ARGUMENT);
+		ZYLANN_TEST_ASSERT(result.root == nullptr);
+	}
+}
+
+class CustomMetadataTest : public ICustomVoxelMetadata {
+public:
+	static const uint8_t ID = VoxelMetadata::TYPE_CUSTOM_BEGIN + 10;
+
+	uint8_t a;
+	uint8_t b;
+	uint8_t c;
+
+	size_t get_serialized_size() const override {
+		// Note, `sizeof(CustomMetadataTest)` gives 16 here. Probably because of vtable
+		return 3;
+	}
+
+	size_t serialize(Span<uint8_t> dst) const override {
+		dst[0] = a;
+		dst[1] = b;
+		dst[2] = c;
+		return get_serialized_size();
+	}
+
+	bool deserialize(Span<const uint8_t> src, uint64_t &out_read_size) override {
+		a = src[0];
+		b = src[1];
+		c = src[2];
+		out_read_size = get_serialized_size();
+		return true;
+	}
+
+	virtual ICustomVoxelMetadata *duplicate() {
+		CustomMetadataTest *d = ZN_NEW(CustomMetadataTest);
+		*d = *this;
+		return d;
+	}
+
+	bool operator==(const CustomMetadataTest &other) const {
+		return a == other.a && b == other.b && c == other.c;
+	}
+};
+
+void test_voxel_buffer_metadata() {
+	// Basic get and set
+	{
+		VoxelBufferInternal vb;
+		vb.create(10, 10, 10);
+
+		VoxelMetadata *meta = vb.get_or_create_voxel_metadata(Vector3i(1, 2, 3));
+		ZYLANN_TEST_ASSERT(meta != nullptr);
+		meta->set_u64(1234567890);
+
+		const VoxelMetadata *meta2 = vb.get_voxel_metadata(Vector3i(1, 2, 3));
+		ZYLANN_TEST_ASSERT(meta2 != nullptr);
+		ZYLANN_TEST_ASSERT(meta2->get_type() == meta->get_type());
+		ZYLANN_TEST_ASSERT(meta2->get_u64() == meta->get_u64());
+	}
+	// Serialization
+	{
+		VoxelBufferInternal vb;
+		vb.create(10, 10, 10);
+
+		{
+			VoxelMetadata *meta0 = vb.get_or_create_voxel_metadata(Vector3i(1, 2, 3));
+			ZYLANN_TEST_ASSERT(meta0 != nullptr);
+			meta0->set_u64(1234567890);
+		}
+
+		{
+			VoxelMetadata *meta1 = vb.get_or_create_voxel_metadata(Vector3i(4, 5, 6));
+			ZYLANN_TEST_ASSERT(meta1 != nullptr);
+			meta1->clear();
+		}
+
+		struct RemoveTypeOnExit {
+			~RemoveTypeOnExit() {
+				VoxelMetadataFactory::get_singleton().remove_constructor(CustomMetadataTest::ID);
+			}
+		};
+		RemoveTypeOnExit rmtype;
+		VoxelMetadataFactory::get_singleton().add_constructor_by_type<CustomMetadataTest>(CustomMetadataTest::ID);
+		{
+			VoxelMetadata *meta2 = vb.get_or_create_voxel_metadata(Vector3i(7, 8, 9));
+			ZYLANN_TEST_ASSERT(meta2 != nullptr);
+			CustomMetadataTest *custom = ZN_NEW(CustomMetadataTest);
+			custom->a = 10;
+			custom->b = 20;
+			custom->c = 30;
+			meta2->set_custom(CustomMetadataTest::ID, custom);
+		}
+
+		BlockSerializer::SerializeResult sresult = BlockSerializer::serialize(vb);
+		ZYLANN_TEST_ASSERT(sresult.success);
+		std::vector<uint8_t> bytes = sresult.data;
+
+		VoxelBufferInternal rvb;
+		ZYLANN_TEST_ASSERT(BlockSerializer::deserialize(to_span(bytes), rvb));
+
+		const FlatMapMoveOnly<Vector3i, VoxelMetadata> &vb_meta_map = vb.get_voxel_metadata();
+		const FlatMapMoveOnly<Vector3i, VoxelMetadata> &rvb_meta_map = rvb.get_voxel_metadata();
+
+		ZYLANN_TEST_ASSERT(vb_meta_map.size() == rvb_meta_map.size());
+
+		for (auto it = vb_meta_map.begin(); it != vb_meta_map.end(); ++it) {
+			const VoxelMetadata &meta = it->value;
+			const VoxelMetadata *rmeta = rvb_meta_map.find(it->key);
+
+			ZYLANN_TEST_ASSERT(rmeta != nullptr);
+			ZYLANN_TEST_ASSERT(rmeta->get_type() == meta.get_type());
+
+			switch (meta.get_type()) {
+				case VoxelMetadata::TYPE_EMPTY:
+					break;
+				case VoxelMetadata::TYPE_U64:
+					ZYLANN_TEST_ASSERT(meta.get_u64() == rmeta->get_u64());
+					break;
+				case CustomMetadataTest::ID: {
+					const CustomMetadataTest &custom = static_cast<const CustomMetadataTest &>(meta.get_custom());
+					const CustomMetadataTest &rcustom = static_cast<const CustomMetadataTest &>(rmeta->get_custom());
+					ZYLANN_TEST_ASSERT(custom == rcustom);
+				} break;
+				default:
+					ZYLANN_TEST_ASSERT(false);
+					break;
+			}
+		}
+	}
+}
+
+void test_voxel_buffer_metadata_gd() {
+	// Basic get and set (Godot)
+	{
+		Ref<gd::VoxelBuffer> vb;
+		vb.instantiate();
+		vb->create(10, 10, 10);
+
+		Array meta;
+		meta.push_back("Hello");
+		meta.push_back("World");
+		meta.push_back(42);
+
+		vb->set_voxel_metadata(Vector3i(1, 2, 3), meta);
+
+		Array read_meta = vb->get_voxel_metadata(Vector3i(1, 2, 3));
+		ZYLANN_TEST_ASSERT(read_meta.size() == meta.size());
+		ZYLANN_TEST_ASSERT(read_meta == meta);
+	}
+	// Serialization (Godot)
+	{
+		Ref<gd::VoxelBuffer> vb;
+		vb.instantiate();
+		vb->create(10, 10, 10);
+
+		{
+			Array meta0;
+			meta0.push_back("Hello");
+			meta0.push_back("World");
+			meta0.push_back(42);
+			vb->set_voxel_metadata(Vector3i(1, 2, 3), meta0);
+		}
+		{
+			Dictionary meta1;
+			meta1["One"] = 1;
+			meta1["Two"] = 2.5;
+			meta1["Three"] = Basis();
+			vb->set_voxel_metadata(Vector3i(4, 5, 6), meta1);
+		}
+
+		BlockSerializer::SerializeResult sresult = BlockSerializer::serialize(vb->get_buffer());
+		ZYLANN_TEST_ASSERT(sresult.success);
+		std::vector<uint8_t> bytes = sresult.data;
+
+		Ref<gd::VoxelBuffer> vb2;
+		vb2.instantiate();
+
+		ZYLANN_TEST_ASSERT(BlockSerializer::deserialize(to_span(bytes), vb2->get_buffer()));
+
+		ZYLANN_TEST_ASSERT(vb2->get_buffer().equals(vb->get_buffer()));
+
+		// `equals` does not compare metadata at the moment, mainly because it's not trivial and there is no use case
+		// for it apart from this test, so do it manually
+
+		const FlatMapMoveOnly<Vector3i, VoxelMetadata> &vb_meta_map = vb->get_buffer().get_voxel_metadata();
+		const FlatMapMoveOnly<Vector3i, VoxelMetadata> &vb2_meta_map = vb2->get_buffer().get_voxel_metadata();
+
+		ZYLANN_TEST_ASSERT(vb_meta_map.size() == vb2_meta_map.size());
+
+		for (auto it = vb_meta_map.begin(); it != vb_meta_map.end(); ++it) {
+			const VoxelMetadata &meta = it->value;
+			ZYLANN_TEST_ASSERT(meta.get_type() == gd::METADATA_TYPE_VARIANT);
+
+			const VoxelMetadata *meta2 = vb2_meta_map.find(it->key);
+			ZYLANN_TEST_ASSERT(meta2 != nullptr);
+			ZYLANN_TEST_ASSERT(meta2->get_type() == meta.get_type());
+
+			const gd::VoxelMetadataVariant &metav = static_cast<const gd::VoxelMetadataVariant &>(meta.get_custom());
+			const gd::VoxelMetadataVariant &meta2v = static_cast<const gd::VoxelMetadataVariant &>(meta2->get_custom());
+			ZYLANN_TEST_ASSERT(metav.data == meta2v.data);
+		}
+	}
+}
+
+void test_voxel_mesher_cubes() {
+	VoxelBufferInternal vb;
+	vb.create(8, 8, 8);
+	vb.set_channel_depth(VoxelBufferInternal::CHANNEL_COLOR, VoxelBufferInternal::DEPTH_16_BIT);
+	vb.set_voxel(Color8(0, 255, 0, 255).to_u16(), Vector3i(3, 4, 4), VoxelBufferInternal::CHANNEL_COLOR);
+	vb.set_voxel(Color8(0, 255, 0, 255).to_u16(), Vector3i(4, 4, 4), VoxelBufferInternal::CHANNEL_COLOR);
+	vb.set_voxel(Color8(0, 0, 255, 128).to_u16(), Vector3i(5, 4, 4), VoxelBufferInternal::CHANNEL_COLOR);
+
+	Ref<VoxelMesherCubes> mesher;
+	mesher.instantiate();
+	mesher->set_color_mode(VoxelMesherCubes::COLOR_RAW);
+
+	VoxelMesher::Input input{ vb, nullptr, nullptr, Vector3i(), 0, false };
+	VoxelMesher::Output output;
+	mesher->build(output, input);
+
+	const unsigned int opaque_surface_index = VoxelMesherCubes::MATERIAL_OPAQUE;
+	const unsigned int transparent_surface_index = VoxelMesherCubes::MATERIAL_TRANSPARENT;
+
+	ZYLANN_TEST_ASSERT(output.surfaces.size() == 2);
+	ZYLANN_TEST_ASSERT(output.surfaces[0].arrays.size() > 0);
+	ZYLANN_TEST_ASSERT(output.surfaces[1].arrays.size() > 0);
+
+	const PackedVector3Array surface0_vertices = output.surfaces[opaque_surface_index].arrays[Mesh::ARRAY_VERTEX];
+	const unsigned int surface0_vertices_count = surface0_vertices.size();
+
+	const PackedVector3Array surface1_vertices = output.surfaces[transparent_surface_index].arrays[Mesh::ARRAY_VERTEX];
+	const unsigned int surface1_vertices_count = surface1_vertices.size();
+
+	// println("Surface0:");
+	// for (int i = 0; i < surface0_vertices.size(); ++i) {
+	// 	println(format("v[{}]: {}", i, surface0_vertices[i]));
+	// }
+	// println("Surface1:");
+	// for (int i = 0; i < surface1_vertices.size(); ++i) {
+	// 	println(format("v[{}]: {}", i, surface1_vertices[i]));
+	// }
+
+	// Greedy meshing with two cubes of the same color next to each other means it will be a single box.
+	// Each side has different normals, so vertices have to be repeated. 6 sides * 4 vertices = 24.
+	ZYLANN_TEST_ASSERT(surface0_vertices_count == 24);
+	// The transparent cube has less vertices because one of its faces overlaps with a neighbor solid face,
+	// so it is culled
+	ZYLANN_TEST_ASSERT(surface1_vertices_count == 20);
+}
+
+void test_threaded_task_runner() {
+	static const uint32_t task_duration_usec = 100'000;
+
+	struct TaskCounter {
+		std::atomic_int max_count;
+		std::atomic_int current_count;
+		std::atomic_int completed_count;
+
+		void reset() {
+			max_count = 0;
+			current_count = 0;
+			completed_count = 0;
+		}
+	};
+
+	class TestTask : public IThreadedTask {
+	public:
+		std::shared_ptr<TaskCounter> counter;
+		bool completed = false;
+
+		TestTask(std::shared_ptr<TaskCounter> p_counter) : counter(p_counter) {}
+
+		void run(ThreadedTaskContext ctx) override {
+			ZN_PROFILE_SCOPE();
+			ZN_ASSERT(counter != nullptr);
+
+			++counter->current_count;
+
+			// Update maximum count
+			// https://stackoverflow.com/questions/16190078/how-to-atomically-update-a-maximum-value
+			int current_count = counter->current_count;
+			int prev_max = counter->max_count;
+			while (prev_max < current_count && !counter->max_count.compare_exchange_weak(prev_max, current_count)) {
+				current_count = counter->current_count;
+			}
+
+			Thread::sleep_usec(task_duration_usec);
+
+			--counter->current_count;
+			++counter->completed_count;
+			completed = true;
+		}
+
+		void apply_result() override {
+			ZYLANN_TEST_ASSERT(completed);
+		}
+	};
+
+	struct L {
+		static void dequeue_tasks(ThreadedTaskRunner &runner) {
+			runner.dequeue_completed_tasks([](IThreadedTask *task) {
+				ZN_ASSERT(task != nullptr);
+				task->apply_result();
+				ZN_DELETE(task);
+			});
+		}
+	};
+
+	const unsigned int test_thread_count = 4;
+	const unsigned int hw_concurrency = Thread::get_hardware_concurrency();
+	if (hw_concurrency < test_thread_count) {
+		ZN_PRINT_WARNING(format(
+				"Hardware concurrency is {}, smaller than test requirement {}", test_thread_count, hw_concurrency));
+	}
+
+	std::shared_ptr<TaskCounter> parallel_counter = make_unique_instance<TaskCounter>();
+	std::shared_ptr<TaskCounter> serial_counter = make_unique_instance<TaskCounter>();
+
+	ThreadedTaskRunner runner;
+	runner.set_thread_count(test_thread_count);
+	runner.set_batch_count(1);
+	runner.set_name("Test");
+
+	// Parallel tasks only
+
+	for (unsigned int i = 0; i < 16; ++i) {
+		runner.enqueue(ZN_NEW(TestTask(parallel_counter)), false);
+	}
+
+	runner.wait_for_all_tasks();
+	L::dequeue_tasks(runner);
+	ZYLANN_TEST_ASSERT(parallel_counter->completed_count == 16);
+	ZYLANN_TEST_ASSERT(parallel_counter->max_count <= test_thread_count);
+	ZYLANN_TEST_ASSERT(parallel_counter->current_count == 0);
+
+	// Serial tasks only
+
+	for (unsigned int i = 0; i < 16; ++i) {
+		runner.enqueue(ZN_NEW(TestTask(serial_counter)), true);
+	}
+
+	runner.wait_for_all_tasks();
+	L::dequeue_tasks(runner);
+	ZYLANN_TEST_ASSERT(serial_counter->completed_count == 16);
+	ZYLANN_TEST_ASSERT(serial_counter->max_count == 1);
+	ZYLANN_TEST_ASSERT(serial_counter->current_count == 0);
+
+	// Interleaved
+
+	parallel_counter->reset();
+	serial_counter->reset();
+
+	for (unsigned int i = 0; i < 32; ++i) {
+		if ((i & 1) == 0) {
+			runner.enqueue(ZN_NEW(TestTask(parallel_counter)), false);
+		} else {
+			runner.enqueue(ZN_NEW(TestTask(serial_counter)), true);
+		}
+	}
+
+	runner.wait_for_all_tasks();
+	L::dequeue_tasks(runner);
+	ZYLANN_TEST_ASSERT(parallel_counter->completed_count == 16);
+	ZYLANN_TEST_ASSERT(parallel_counter->max_count <= test_thread_count);
+	ZYLANN_TEST_ASSERT(parallel_counter->current_count == 0);
+	ZYLANN_TEST_ASSERT(serial_counter->completed_count == 16);
+	ZYLANN_TEST_ASSERT(serial_counter->max_count == 1);
+	ZYLANN_TEST_ASSERT(serial_counter->current_count == 0);
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VOXEL_TEST(fname)                                                                                              \
@@ -1440,6 +2235,7 @@ void run_voxel_tests() {
 	VOXEL_TEST(test_encode_weights_packed_u16);
 	VOXEL_TEST(test_copy_3d_region_zxy);
 	VOXEL_TEST(test_voxel_graph_generator_default_graph_compilation);
+	VOXEL_TEST(test_voxel_graph_generator_expressions);
 	VOXEL_TEST(test_voxel_graph_generator_texturing);
 	VOXEL_TEST(test_island_finder);
 	VOXEL_TEST(test_unordered_remove_if);
@@ -1450,6 +2246,7 @@ void run_voxel_tests() {
 	VOXEL_TEST(test_get_curve_monotonic_sections);
 	VOXEL_TEST(test_voxel_buffer_create);
 	VOXEL_TEST(test_block_serializer);
+	VOXEL_TEST(test_block_serializer_stream_peer);
 	VOXEL_TEST(test_region_file);
 	VOXEL_TEST(test_voxel_stream_region_files);
 #ifdef VOXEL_ENABLE_FAST_NOISE_2
@@ -1457,6 +2254,11 @@ void run_voxel_tests() {
 #endif
 	VOXEL_TEST(test_run_blocky_random_tick);
 	VOXEL_TEST(test_flat_map);
+	VOXEL_TEST(test_expression_parser);
+	VOXEL_TEST(test_voxel_buffer_metadata);
+	VOXEL_TEST(test_voxel_buffer_metadata_gd);
+	VOXEL_TEST(test_voxel_mesher_cubes);
+	VOXEL_TEST(test_threaded_task_runner);
 
 	print_line("------------ Voxel tests end -------------");
 }

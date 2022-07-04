@@ -1,10 +1,13 @@
 #include "voxel_graph_node_db.h"
 #include "../../constants/voxel_constants.h"
+#include "../../util/macros.h"
 #include "../../util/math/sdf.h"
-#include "../../util/noise/fast_noise_lite.h"
-#include "../../util/noise/fast_noise_lite_range.h"
-#include "../../util/noise/osn_noise_range.h"
+#include "../../util/noise/fast_noise_lite/fast_noise_lite.h"
+#include "../../util/noise/fast_noise_lite/fast_noise_lite_range.h"
+#include "../../util/noise/gd_noise_range.h"
 #include "../../util/profiling.h"
+#include "../../util/string_funcs.h"
+#include "fast_noise_lite_gdshader.h"
 #include "image_range_grid.h"
 #include "range_utility.h"
 
@@ -12,7 +15,8 @@
 #include "../../util/noise/fast_noise_2.h"
 #endif
 
-#include <modules/opensimplex/open_simplex_noise.h>
+#include <modules/noise/fastnoise_lite.h>
+#include <modules/noise/noise.h>
 #include <scene/resources/curve.h>
 
 namespace zylann::voxel {
@@ -213,9 +217,16 @@ inline Interval sdf_sphere_heightmap(Interval x, Interval y, Interval z, float r
 	return sd - m * h;
 }
 
-VoxelGraphNodeDB *VoxelGraphNodeDB::get_singleton() {
+template <typename T>
+Variant create_resource_to_variant() {
+	Ref<T> res;
+	res.instantiate();
+	return Variant(res);
+}
+
+const VoxelGraphNodeDB &VoxelGraphNodeDB::get_singleton() {
 	CRASH_COND(g_node_type_db == nullptr);
-	return g_node_type_db;
+	return *g_node_type_db;
 }
 
 void VoxelGraphNodeDB::create_singleton() {
@@ -252,9 +263,10 @@ const char *VoxelGraphNodeDB::get_category_name(Category category) {
 }
 
 VoxelGraphNodeDB::VoxelGraphNodeDB() {
-	typedef VoxelGraphRuntime::CompileContext CompileContext;
+	//typedef VoxelGraphRuntime::CompileContext CompileContext;
 	typedef VoxelGraphRuntime::ProcessBufferContext ProcessBufferContext;
 	typedef VoxelGraphRuntime::RangeAnalysisContext RangeAnalysisContext;
+	//typedef VoxelGraphRuntime::ShaderGenContext ShaderGenContext;
 
 	FixedArray<NodeType, VoxelGeneratorGraph::NODE_TYPE_COUNT> &types = _types;
 
@@ -375,6 +387,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval b = ctx.get_input(1);
 			ctx.set_output(0, a + b);
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = {} + {};\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SUBTRACT];
@@ -390,6 +405,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval a = ctx.get_input(0);
 			const Interval b = ctx.get_input(1);
 			ctx.set_output(0, a - b);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = {} - {};\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
 		};
 	}
 	{
@@ -412,6 +430,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 				ctx.set_output(0, a * b);
 			}
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = {} * {};\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_DIVIDE];
@@ -426,6 +447,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval b = ctx.get_input(1);
 			ctx.set_output(0, a / b);
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = {} / {};\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SIN];
@@ -437,6 +461,13 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.range_analysis_func = [](RangeAnalysisContext &ctx) {
 			const Interval a = ctx.get_input(0);
 			ctx.set_output(0, sin(a));
+		};
+		t.expression_func_name = "sin";
+		t.expression_func = [](Span<const float> args) { //
+			return Math::sin(args[0]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = sin({});\n", ctx.get_output_name(0), ctx.get_input_name(0));
 		};
 	}
 	{
@@ -452,6 +483,13 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval a = ctx.get_input(0);
 			ctx.set_output(0, floor(a));
 		};
+		t.expression_func_name = "floor";
+		t.expression_func = [](Span<const float> args) { //
+			return Math::floor(args[0]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = floor({});\n", ctx.get_output_name(0), ctx.get_input_name(0));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_ABS];
@@ -464,6 +502,13 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval a = ctx.get_input(0);
 			ctx.set_output(0, abs(a));
 		};
+		t.expression_func_name = "abs";
+		t.expression_func = [](Span<const float> args) { //
+			return Math::abs(args[0]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = abs({});\n", ctx.get_output_name(0), ctx.get_input_name(0));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SQRT];
@@ -475,6 +520,13 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.range_analysis_func = [](RangeAnalysisContext &ctx) {
 			const Interval a = ctx.get_input(0);
 			ctx.set_output(0, sqrt(a));
+		};
+		t.expression_func_name = "sqrt";
+		t.expression_func = [](Span<const float> args) { //
+			return Math::sqrt(args[0]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = sqrt({});\n", ctx.get_output_name(0), ctx.get_input_name(0));
 		};
 	}
 	{
@@ -490,6 +542,13 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval a = ctx.get_input(0);
 			ctx.set_output(0, a - floor(a));
 		};
+		t.expression_func_name = "fract";
+		t.expression_func = [](Span<const float> args) { //
+			return args[0] - Math::floor(args[0]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = fract({});\n", ctx.get_output_name(0), ctx.get_input_name(0));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_STEPIFY];
@@ -499,12 +558,24 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("step"));
 		t.outputs.push_back(Port("out"));
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			do_binop(ctx, [](float a, float b) { return Math::snapped(a, b); });
+			do_binop(ctx, [](float a, float b) { return math::snappedf(a, b); });
 		};
 		t.range_analysis_func = [](RangeAnalysisContext &ctx) {
 			const Interval a = ctx.get_input(0);
 			const Interval b = ctx.get_input(1);
-			ctx.set_output(0, stepify(a, b));
+			ctx.set_output(0, snapped(a, b));
+		};
+		t.expression_func_name = "stepify";
+		t.expression_func = [](Span<const float> args) { //
+			return math::snappedf(args[0], args[1]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.require_lib_code("stepify",
+					"float vg_stepify(float value, float step) {\n"
+					"	return floor(p_value / step + 0.5f) * step;\n"
+					"}\n");
+			ctx.add_format(
+					"{} = vg_stepify({}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
 		};
 	}
 	{
@@ -522,6 +593,18 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval b = ctx.get_input(1);
 			ctx.set_output(0, wrapf(a, b));
 		};
+		t.expression_func_name = "wrap";
+		t.expression_func = [](Span<const float> args) { //
+			return wrapf(args[0], args[1]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.require_lib_code("wrap",
+					"float vg_wrap(float x, float d) {\n"
+					"	return x - (d * floor(x / d));\n"
+					"}\n");
+			ctx.add_format(
+					"{} = vg_wrap({}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_MIN];
@@ -538,6 +621,13 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval b = ctx.get_input(1);
 			ctx.set_output(0, min_interval(a, b));
 		};
+		t.expression_func_name = "min";
+		t.expression_func = [](Span<const float> args) { //
+			return min(args[0], args[1]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = min({}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_MAX];
@@ -553,6 +643,13 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval a = ctx.get_input(0);
 			const Interval b = ctx.get_input(1);
 			ctx.set_output(0, max_interval(a, b));
+		};
+		t.expression_func_name = "max";
+		t.expression_func = [](Span<const float> args) { //
+			return max(args[0], args[1]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = max({}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
 		};
 	}
 	{
@@ -583,6 +680,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval dy = y1 - y0;
 			const Interval r = sqrt(squared(dx) + squared(dy));
 			ctx.set_output(0, r);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = distance(vec2({}, {}), vec2({}, {}));\n", ctx.get_output_name(0),
+					ctx.get_input_name(0), ctx.get_input_name(1), ctx.get_input_name(2), ctx.get_input_name(3));
 		};
 	}
 	{
@@ -622,14 +723,51 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			Interval r = get_length(dx, dy, dz);
 			ctx.set_output(0, r);
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = distance(vec3({}, {}, {}), vec2({}, {}, {}));\n", ctx.get_output_name(0),
+					ctx.get_input_name(0), ctx.get_input_name(1), ctx.get_input_name(2), ctx.get_input_name(3),
+					ctx.get_input_name(4), ctx.get_input_name(5));
+		};
+	}
+	{
+		NodeType &t = types[VoxelGeneratorGraph::NODE_CLAMP];
+		t.name = "Clamp";
+		t.category = CATEGORY_CONVERT;
+		t.inputs.push_back(Port("x"));
+		t.inputs.push_back(Port("min", -1.f));
+		t.inputs.push_back(Port("max", 1.f));
+		t.outputs.push_back(Port("out"));
+		t.process_buffer_func = [](ProcessBufferContext &ctx) {
+			const VoxelGraphRuntime::Buffer &a = ctx.get_input(0);
+			const VoxelGraphRuntime::Buffer &minv = ctx.get_input(1);
+			const VoxelGraphRuntime::Buffer &maxv = ctx.get_input(2);
+			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
+			for (uint32_t i = 0; i < out.size; ++i) {
+				out.data[i] = clamp(a.data[i], minv.data[i], maxv.data[i]);
+			}
+		};
+		t.range_analysis_func = [](RangeAnalysisContext &ctx) {
+			const Interval a = ctx.get_input(0);
+			const Interval minv = ctx.get_input(1);
+			const Interval maxv = ctx.get_input(2);
+			ctx.set_output(0, clamp(a, minv, maxv));
+		};
+		t.expression_func_name = "clamp";
+		t.expression_func = [](Span<const float> args) { //
+			return clamp(args[0], args[1], args[2]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = clamp({}, {}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0),
+					ctx.get_input_name(1), ctx.get_input_name(2));
+		};
 	}
 	{
 		struct Params {
 			float min;
 			float max;
 		};
-		NodeType &t = types[VoxelGeneratorGraph::NODE_CLAMP];
-		t.name = "Clamp";
+		NodeType &t = types[VoxelGeneratorGraph::NODE_CLAMP_C];
+		t.name = "ClampC";
 		t.category = CATEGORY_CONVERT;
 		t.inputs.push_back(Port("x"));
 		t.outputs.push_back(Port("out"));
@@ -655,6 +793,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval cmin = Interval::from_single_value(p.min);
 			const Interval cmax = Interval::from_single_value(p.max);
 			ctx.set_output(0, clamp(a, cmin, cmax));
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = clamp({}, {}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0),
+					float(ctx.get_param(0)), float(ctx.get_param(1)));
 		};
 	}
 	{
@@ -736,6 +878,14 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			}
 			ctx.set_output(0, lerp(a, b, r));
 		};
+		t.expression_func_name = "lerp";
+		t.expression_func = [](Span<const float> args) { //
+			return Math::lerp(args[0], args[1], args[2]);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = mix({}, {}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0),
+					ctx.get_input_name(1), ctx.get_input_name(2));
+		};
 	}
 	{
 		struct Params {
@@ -743,6 +893,22 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			// a * x + b
 			float a;
 			float b;
+
+			static Params from_intervals(float min0, float max0, float min1, float max1) {
+				// min1 + (max1 - min1) * (x - min0) / (max0 - min0)
+				// min1 + (max1 - min1) * (x - min0) * (1/(max0 - min0))
+				// min1 +       A       * (x - min0) *        B
+				// min1 + A * B * (x - min0)
+				// min1 + A * B * x - A * B * min0
+				// min1 +   C   * x -   C   * min0
+				// min1 - C * min0 + C * x
+				// (min1 - C * min0) + C * x
+				//         b         + a * x
+				// a * x + b
+				const float a = (max1 - min1) * (Math::is_equal_approx(max0, min0) ? 999999.f : 1.f / (max0 - min0));
+				const float b = min1 - a * min0;
+				return { a, b };
+			}
 		};
 		NodeType &t = types[VoxelGeneratorGraph::NODE_REMAP];
 		t.name = "Remap";
@@ -754,24 +920,11 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.params.push_back(Param("min1", Variant::FLOAT, -1.f));
 		t.params.push_back(Param("max1", Variant::FLOAT, 1.f));
 		t.compile_func = [](CompileContext &ctx) {
-			Params p;
 			const float min0 = ctx.get_param(0).operator float();
 			const float max0 = ctx.get_param(1).operator float();
 			const float min1 = ctx.get_param(2).operator float();
 			const float max1 = ctx.get_param(3).operator float();
-			// min1 + (max1 - min1) * (x - min0) / (max0 - min0)
-			// min1 + (max1 - min1) * (x - min0) * (1/(max0 - min0))
-			// min1 +       A       * (x - min0) *        B
-			// min1 + A * B * (x - min0)
-			// min1 + A * B * x - A * B * min0
-			// min1 +   C   * x -   C   * min0
-			// min1 - C * min0 + C * x
-			// (min1 - C * min0) + C * x
-			//         b         + a * x
-			// a * x + b
-			p.a = (max1 - min1) * (Math::is_equal_approx(max0, min0) ? 999999.f : 1.f / (max0 - min0));
-			p.b = min1 - p.a * min0;
-			ctx.set_params(p);
+			ctx.set_params(Params::from_intervals(min0, max0, min1, max1));
 		};
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
@@ -785,6 +938,11 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval x = ctx.get_input(0);
 			const Params p = ctx.get_params<Params>();
 			ctx.set_output(0, p.a * x + p.b);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			const Params p = Params::from_intervals(
+					float(ctx.get_param(0)), float(ctx.get_param(1)), float(ctx.get_param(2)), float(ctx.get_param(3)));
+			ctx.add_format("{} = {} * {} + {};\n", ctx.get_output_name(0), p.a, p.b);
 		};
 	}
 	{
@@ -818,6 +976,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Params p = ctx.get_params<Params>();
 			ctx.set_output(0, smoothstep(p.edge0, p.edge1, a));
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = smoothstep({}, {}, {});\n", ctx.get_output_name(0), float(ctx.get_param(0)),
+					float(ctx.get_param(1)), ctx.get_input_name(0));
+		};
 	}
 	{
 		struct Params {
@@ -830,11 +992,21 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.category = CATEGORY_CONVERT;
 		t.inputs.push_back(Port("x"));
 		t.outputs.push_back(Port("out"));
-		t.params.push_back(Param("curve", Curve::get_class_static()));
+		t.params.push_back(Param("curve", Curve::get_class_static(), []() {
+			Ref<Curve> curve;
+			curve.instantiate();
+			// The default preset when creating a Curve isn't convenient.
+			// Let's use a linear preset.
+			curve->add_point(Vector2(0, 0));
+			curve->add_point(Vector2(1, 1));
+			curve->set_point_right_mode(0, Curve::TANGENT_LINEAR);
+			curve->set_point_left_mode(1, Curve::TANGENT_LINEAR);
+			return Variant(curve);
+		}));
 		t.compile_func = [](CompileContext &ctx) {
 			Ref<Curve> curve = ctx.get_param(0);
 			if (curve.is_null()) {
-				ctx.make_error("Curve instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null")).format(varray(Curve::get_class_static())));
 				return;
 			}
 			// Make sure it is baked. We don't want multithreading to bail out because of a write operation
@@ -849,7 +1021,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			ctx.add_memdelete_cleanup(curve_range_data);
 		};
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_CURVE");
+			ZN_PROFILE_SCOPE_NAMED("NODE_CURVE");
 			const VoxelGraphRuntime::Buffer &a = ctx.get_input(0);
 			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
 			const Params p = ctx.get_params<Params>();
@@ -871,7 +1043,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 	}
 	{
 		struct Params {
-			const OpenSimplexNoise *noise;
+			// TODO Cannot be `const` because of an oversight in Godot, but the devs are not sure to do it
+			// TODO We therefore have no guarantee it is thread-safe to use...
+			Noise *noise;
 		};
 
 		NodeType &t = types[VoxelGeneratorGraph::NODE_NOISE_2D];
@@ -880,12 +1054,12 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("x"));
 		t.inputs.push_back(Port("y"));
 		t.outputs.push_back(Port("out"));
-		t.params.push_back(Param("noise", OpenSimplexNoise::get_class_static()));
+		t.params.push_back(Param("noise", Noise::get_class_static(), &create_resource_to_variant<FastNoiseLite>));
 
 		t.compile_func = [](CompileContext &ctx) {
-			Ref<OpenSimplexNoise> noise = ctx.get_param(0);
+			Ref<Noise> noise = ctx.get_param(0);
 			if (noise.is_null()) {
-				ctx.make_error("OpenSimplexNoise instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null")).format(varray(Noise::get_class_static())));
 				return;
 			}
 			Params p;
@@ -894,7 +1068,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_NOISE_2D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_NOISE_2D");
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &y = ctx.get_input(1);
 			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
@@ -909,12 +1083,14 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval y = ctx.get_input(1);
 			const Params p = ctx.get_params<Params>();
 			// Shouldn't be null, it is checked when the graph is compiled
-			ctx.set_output(0, get_osn_range_2d(*p.noise, x, y));
+			ctx.set_output(0, get_range_2d(*p.noise, x, y));
 		};
 	}
 	{
 		struct Params {
-			const OpenSimplexNoise *noise;
+			// TODO Cannot be `const` because of an oversight in Godot, but the devs are not sure to do it
+			// TODO We therefore have no guarantee it is thread-safe to use...
+			Noise *noise;
 		};
 
 		NodeType &t = types[VoxelGeneratorGraph::NODE_NOISE_3D];
@@ -924,12 +1100,12 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("y"));
 		t.inputs.push_back(Port("z"));
 		t.outputs.push_back(Port("out"));
-		t.params.push_back(Param("noise", OpenSimplexNoise::get_class_static()));
+		t.params.push_back(Param("noise", Noise::get_class_static(), &create_resource_to_variant<FastNoiseLite>));
 
 		t.compile_func = [](CompileContext &ctx) {
-			Ref<OpenSimplexNoise> noise = ctx.get_param(0);
+			Ref<Noise> noise = ctx.get_param(0);
 			if (noise.is_null()) {
-				ctx.make_error("OpenSimplexNoise instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null")).format(varray(Noise::get_class_static())));
 				return;
 			}
 			Params p;
@@ -938,7 +1114,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_NOISE_3D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_NOISE_3D");
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &y = ctx.get_input(1);
 			const VoxelGraphRuntime::Buffer &z = ctx.get_input(2);
@@ -955,7 +1131,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval z = ctx.get_input(2);
 			const Params p = ctx.get_params<Params>();
 			// Shouldn't be null, it is checked when the graph is compiled
-			ctx.set_output(0, get_osn_range_3d(*p.noise, x, y, z));
+			ctx.set_output(0, get_range_3d(*p.noise, x, y, z));
 		};
 	}
 	{
@@ -969,15 +1145,16 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("x"));
 		t.inputs.push_back(Port("y"));
 		t.outputs.push_back(Port("out"));
-		t.params.push_back(Param("image", Image::get_class_static()));
+		t.params.push_back(Param("image", Image::get_class_static(), nullptr));
 		t.compile_func = [](CompileContext &ctx) {
 			Ref<Image> image = ctx.get_param(0);
 			if (image.is_null()) {
-				ctx.make_error("Image instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null")).format(varray(Image::get_class_static())));
 				return;
 			}
 			if (image->is_compressed()) {
-				ctx.make_error("Image has a compressed format, this is not supported");
+				ctx.make_error(String(ZN_TTR("{0} has a compressed format, this is not supported"))
+									   .format(varray(Image::get_class_static())));
 				return;
 			}
 			ImageRangeGrid *im_range = memnew(ImageRangeGrid);
@@ -989,7 +1166,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			ctx.add_memdelete_cleanup(im_range);
 		};
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_IMAGE_2D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_IMAGE_2D");
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &y = ctx.get_input(1);
 			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
@@ -1021,6 +1198,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval a = ctx.get_input(0);
 			const Interval b = ctx.get_input(1);
 			ctx.set_output(0, a - b);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = {} - {};\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
 		};
 	}
 	{
@@ -1056,6 +1236,16 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval sz = ctx.get_input(5);
 			ctx.set_output(0, math::sdf_box(x, y, z, sx, sy, sz));
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.require_lib_code("sdf_box",
+					"float vg_sdf_box(vec3 p, vec3 b) {\n"
+					"	vec3 q = abs(p) - b;\n"
+					"	return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);\n"
+					"}\n");
+			ctx.add_format("{} = vg_sdf_box(vec3({}, {}, {}), vec3({}, {}, {}));\n", ctx.get_output_name(0),
+					ctx.get_input_name(0), ctx.get_input_name(1), ctx.get_input_name(2), ctx.get_input_name(3),
+					ctx.get_input_name(4), ctx.get_input_name(5));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SDF_SPHERE];
@@ -1082,6 +1272,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval z = ctx.get_input(2);
 			const Interval r = ctx.get_input(3);
 			ctx.set_output(0, get_length(x, y, z) - r);
+		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = length(vec3({}, {}, {})) - {};\n", ctx.get_output_name(0), ctx.get_input_name(0),
+					ctx.get_input_name(1), ctx.get_input_name(2), ctx.get_input_name(3));
 		};
 	}
 	{
@@ -1113,6 +1307,16 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			const Interval r1 = ctx.get_input(4);
 			ctx.set_output(0, math::sdf_torus(x, y, z, r0, r1));
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.require_lib_code("sdf_torus",
+					"float vg_sdf_torus(vec3 p, vec2 t) {\n"
+					"	vec2 q = vec2(length(p.xz) - t.x, p.y);\n"
+					"	return length(q) - t.y;\n"
+					"}\n");
+			ctx.add_format("{} = vg_sdf_torus(vec3({}, {}, {}), vec2({}, {}));\n", ctx.get_output_name(0),
+					ctx.get_input_name(0), ctx.get_input_name(1), ctx.get_input_name(2), ctx.get_input_name(3),
+					ctx.get_input_name(4));
+		};
 	}
 	{
 		struct Params {
@@ -1131,7 +1335,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			ctx.set_params(p);
 		};
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_SDF_SMOOTH_UNION");
+			ZN_PROFILE_SCOPE_NAMED("NODE_SDF_SMOOTH_UNION");
 			bool a_ignored;
 			bool b_ignored;
 			const VoxelGraphRuntime::Buffer &a = ctx.try_get_input(0, a_ignored);
@@ -1198,6 +1402,15 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 				ctx.set_output(0, math::sdf_union(a, b));
 			}
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.require_lib_code("sdf_smooth_union",
+					"float vg_sdf_smooth_union(float a, float b, float s) {\n"
+					"	float h = clamp(0.5 + 0.5 * (b - a) / s, 0.0, 1.0);\n"
+					"	return mix(b, a, h) - s * h * (1.0 - h);\n"
+					"}\n");
+			ctx.add_format("{} = vg_sdf_smooth_union({}, {}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0),
+					ctx.get_input_name(1), float(ctx.get_param(0)));
+		};
 	}
 	{
 		struct Params {
@@ -1216,7 +1429,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			ctx.set_params(p);
 		};
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_SDF_SMOOTH_SUBTRACT");
+			ZN_PROFILE_SCOPE_NAMED("NODE_SDF_SMOOTH_SUBTRACT");
 			bool a_ignored;
 			bool b_ignored;
 			const VoxelGraphRuntime::Buffer &a = ctx.try_get_input(0, a_ignored);
@@ -1283,6 +1496,15 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 				ctx.set_output(0, math::sdf_subtract(a, b));
 			}
 		};
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.require_lib_code("sdf_smooth_subtract",
+					"float vg_sdf_smooth_subtract(float b, float a, float s) {\n"
+					"	float h = clamp(0.5 - 0.5 * (b + a) / s, 0.0, 1.0);\n"
+					"	return mix(b, -a, h) + s * h * (1.0 - h);\n"
+					"}\n");
+			ctx.add_format("{} = vg_sdf_smooth_subtract({}, {}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0),
+					ctx.get_input_name(1), float(ctx.get_param(0)));
+		};
 	}
 	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SDF_PREVIEW];
@@ -1292,6 +1514,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.params.push_back(Param("min_value", Variant::FLOAT, -1.f));
 		t.params.push_back(Param("max_value", Variant::FLOAT, 1.f));
 		t.debug_only = true;
+		t.is_pseudo_node = true;
 	}
 	{
 		struct Params {
@@ -1385,18 +1608,19 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("y"));
 		t.inputs.push_back(Port("z"));
 		t.outputs.push_back(Port("sdf"));
-		t.params.push_back(Param("image", Image::get_class_static()));
+		t.params.push_back(Param("image", Image::get_class_static(), nullptr));
 		t.params.push_back(Param("radius", Variant::FLOAT, 10.f));
 		t.params.push_back(Param("factor", Variant::FLOAT, 1.f));
 
 		t.compile_func = [](CompileContext &ctx) {
 			Ref<Image> image = ctx.get_param(0);
 			if (image.is_null()) {
-				ctx.make_error("Image instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null")).format(varray(Image::get_class_static())));
 				return;
 			}
 			if (image->is_compressed()) {
-				ctx.make_error("Image has a compressed format, this is not supported");
+				ctx.make_error(String(ZN_TTR("{0} has a compressed format, this is not supported"))
+									   .format(varray(Image::get_class_static())));
 				return;
 			}
 			ImageRangeGrid *im_range = memnew(ImageRangeGrid);
@@ -1417,7 +1641,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_SDF_SPHERE_HEIGHTMAP");
+			ZN_PROFILE_SCOPE_NAMED("NODE_SDF_SPHERE_HEIGHTMAP");
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &y = ctx.get_input(1);
 			const VoxelGraphRuntime::Buffer &z = ctx.get_input(2);
@@ -1453,7 +1677,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.outputs.push_back(Port("len"));
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_NORMALIZE_3D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_NORMALIZE_3D");
 			const VoxelGraphRuntime::Buffer &xb = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &yb = ctx.get_input(1);
 			const VoxelGraphRuntime::Buffer &zb = ctx.get_input(2);
@@ -1487,10 +1711,23 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			ctx.set_output(2, nz);
 			ctx.set_output(3, len);
 		};
+
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.require_lib_code("vg_normalize",
+					"void vg_normalize(vec3 v, out float x, out float y, out float z) {\n"
+					"	v = normalize(v);\n"
+					"	x = v.x;\n"
+					"	y = v.y;\n"
+					"	z = v.z;\n"
+					"}\n");
+			ctx.add_format("vg_normalize(vec3({}, {}, {}), {}, {}, {});\n", ctx.get_input_name(0),
+					ctx.get_input_name(1), ctx.get_input_name(2), ctx.get_output_name(0), ctx.get_output_name(2),
+					ctx.get_output_name(2));
+		};
 	}
 	{
 		struct Params {
-			const FastNoiseLite *noise;
+			const ZN_FastNoiseLite *noise;
 		};
 
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_2D];
@@ -1499,12 +1736,14 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("x"));
 		t.inputs.push_back(Port("y"));
 		t.outputs.push_back(Port("out"));
-		t.params.push_back(Param("noise", FastNoiseLite::get_class_static()));
+		t.params.push_back(
+				Param("noise", ZN_FastNoiseLite::get_class_static(), &create_resource_to_variant<ZN_FastNoiseLite>));
 
 		t.compile_func = [](CompileContext &ctx) {
-			Ref<FastNoiseLite> noise = ctx.get_param(0);
+			Ref<ZN_FastNoiseLite> noise = ctx.get_param(0);
 			if (noise.is_null()) {
-				ctx.make_error("FastNoiseLite instance is null");
+				ctx.make_error(
+						String(ZN_TTR("{0} instance is null")).format(varray(ZN_FastNoiseLite::get_class_static())));
 				return;
 			}
 			Params p;
@@ -1513,7 +1752,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_2D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_2D");
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &y = ctx.get_input(1);
 			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
@@ -1530,10 +1769,32 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			// Shouldn't be null, it is checked when the graph is compiled
 			ctx.set_output(0, get_fnl_range_2d(*p.noise, x, y));
 		};
+
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			Ref<ZN_FastNoiseLite> noise = ctx.get_param(0);
+			if (noise.is_null()) {
+				ctx.make_error(
+						String(ZN_TTR("{0} instance is null")).format(varray(ZN_FastNoiseLite::get_class_static())));
+				return;
+			}
+			ctx.require_lib_code("vg_fnl", zylann::fast_noise_lite::GDSHADER_SOURCE);
+			// TODO Add missing options
+			ctx.add_format("fnl_state state = fnlCreateState({});\n"
+						   "state.noise_type = {};\n"
+						   "state.fractal_type = {};\n"
+						   "state.octaves = {};\n"
+						   "state.gain = {};\n"
+						   "state.frequency = {};\n"
+						   "state.lacunarity = {};\n"
+						   "{} = fnlGetNoise2D(state, {}, {});\n",
+					noise->get_seed(), noise->get_noise_type(), noise->get_fractal_type(), noise->get_fractal_octaves(),
+					noise->get_fractal_gain(), 1.0 / noise->get_period(), noise->get_fractal_lacunarity(),
+					ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
+		};
 	}
 	{
 		struct Params {
-			const FastNoiseLite *noise;
+			const ZN_FastNoiseLite *noise;
 		};
 
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_3D];
@@ -1543,12 +1804,14 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("y"));
 		t.inputs.push_back(Port("z"));
 		t.outputs.push_back(Port("out"));
-		t.params.push_back(Param("noise", FastNoiseLite::get_class_static()));
+		t.params.push_back(
+				Param("noise", ZN_FastNoiseLite::get_class_static(), &create_resource_to_variant<ZN_FastNoiseLite>));
 
 		t.compile_func = [](CompileContext &ctx) {
-			Ref<FastNoiseLite> noise = ctx.get_param(0);
+			Ref<ZN_FastNoiseLite> noise = ctx.get_param(0);
 			if (noise.is_null()) {
-				ctx.make_error("FastNoiseLite instance is null");
+				ctx.make_error(
+						String(ZN_TTR("{0} instance is null")).format(varray(ZN_FastNoiseLite::get_class_static())));
 				return;
 			}
 			Params p;
@@ -1557,7 +1820,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_3D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_3D");
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &y = ctx.get_input(1);
 			const VoxelGraphRuntime::Buffer &z = ctx.get_input(2);
@@ -1576,10 +1839,32 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			// Shouldn't be null, it is checked when the graph is compiled
 			ctx.set_output(0, get_fnl_range_3d(*p.noise, x, y, z));
 		};
+
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			Ref<ZN_FastNoiseLite> noise = ctx.get_param(0);
+			if (noise.is_null()) {
+				ctx.make_error(
+						String(ZN_TTR("{0} instance is null")).format(varray(ZN_FastNoiseLite::get_class_static())));
+				return;
+			}
+			ctx.require_lib_code("vg_fnl", zylann::fast_noise_lite::GDSHADER_SOURCE);
+			// TODO Add missing options
+			ctx.add_format("fnl_state state = fnlCreateState({});\n"
+						   "state.noise_type = {};\n"
+						   "state.fractal_type = {};\n"
+						   "state.octaves = {};\n"
+						   "state.gain = {};\n"
+						   "state.frequency = {};\n"
+						   "state.lacunarity = {};\n"
+						   "{} = fnlGetNoise3D(state, {}, {}, {});\n",
+					noise->get_seed(), noise->get_noise_type(), noise->get_fractal_type(), noise->get_fractal_octaves(),
+					noise->get_fractal_gain(), 1.0 / noise->get_period(), noise->get_fractal_lacunarity(),
+					ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1), ctx.get_input_name(2));
+		};
 	}
 	{
 		struct Params {
-			FastNoiseLiteGradient *noise;
+			ZN_FastNoiseLiteGradient *noise;
 		};
 
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_GRADIENT_2D];
@@ -1589,12 +1874,14 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("y"));
 		t.outputs.push_back(Port("out_x"));
 		t.outputs.push_back(Port("out_y"));
-		t.params.push_back(Param("noise", FastNoiseLiteGradient::get_class_static()));
+		t.params.push_back(Param("noise", ZN_FastNoiseLiteGradient::get_class_static(),
+				&create_resource_to_variant<ZN_FastNoiseLiteGradient>));
 
 		t.compile_func = [](CompileContext &ctx) {
-			Ref<FastNoiseLiteGradient> noise = ctx.get_param(0);
+			Ref<ZN_FastNoiseLiteGradient> noise = ctx.get_param(0);
 			if (noise.is_null()) {
-				ctx.make_error("FastNoiseLiteGradient instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null"))
+									   .format(varray(ZN_FastNoiseLiteGradient::get_class_static())));
 				return;
 			}
 			Params p;
@@ -1603,7 +1890,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_GRADIENT_2D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_GRADIENT_2D");
 			const VoxelGraphRuntime::Buffer &xb = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &yb = ctx.get_input(1);
 			VoxelGraphRuntime::Buffer &out_x = ctx.get_output(0);
@@ -1630,7 +1917,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 	}
 	{
 		struct Params {
-			FastNoiseLiteGradient *noise;
+			ZN_FastNoiseLiteGradient *noise;
 		};
 
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_GRADIENT_3D];
@@ -1642,12 +1929,14 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.outputs.push_back(Port("out_x"));
 		t.outputs.push_back(Port("out_y"));
 		t.outputs.push_back(Port("out_z"));
-		t.params.push_back(Param("noise", FastNoiseLiteGradient::get_class_static()));
+		t.params.push_back(Param("noise", ZN_FastNoiseLiteGradient::get_class_static(),
+				&create_resource_to_variant<ZN_FastNoiseLiteGradient>));
 
 		t.compile_func = [](CompileContext &ctx) {
-			Ref<FastNoiseLiteGradient> noise = ctx.get_param(0);
+			Ref<ZN_FastNoiseLiteGradient> noise = ctx.get_param(0);
 			if (noise.is_null()) {
-				ctx.make_error("FastNoiseLiteGradient instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null"))
+									   .format(varray(ZN_FastNoiseLiteGradient::get_class_static())));
 				return;
 			}
 			Params p;
@@ -1656,7 +1945,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_GRADIENT_3D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_GRADIENT_3D");
 			const VoxelGraphRuntime::Buffer &xb = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &yb = ctx.get_input(1);
 			const VoxelGraphRuntime::Buffer &zb = ctx.get_input(2);
@@ -1699,17 +1988,17 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("x"));
 		t.inputs.push_back(Port("y"));
 		t.outputs.push_back(Port("out"));
-		t.params.push_back(Param("noise", FastNoise2::get_class_static()));
+		t.params.push_back(Param("noise", FastNoise2::get_class_static(), &create_resource_to_variant<FastNoise2>));
 
 		t.compile_func = [](CompileContext &ctx) {
 			Ref<FastNoise2> noise = ctx.get_param(0);
 			if (noise.is_null()) {
-				ctx.make_error("FastNoise2 instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null")).format(varray(FastNoise2::get_class_static())));
 				return;
 			}
 			noise->update_generator();
 			if (!noise->is_valid()) {
-				ctx.make_error("FastNoise2 setup is invalid");
+				ctx.make_error(String(ZN_TTR("{0} setup is invalid")).format(varray(FastNoise2::get_class_static())));
 				return;
 			}
 			Params p;
@@ -1718,7 +2007,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_2_2D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_2_2D");
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &y = ctx.get_input(1);
 			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
@@ -1747,17 +2036,17 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("y"));
 		t.inputs.push_back(Port("z"));
 		t.outputs.push_back(Port("out"));
-		t.params.push_back(Param("noise", FastNoise2::get_class_static()));
+		t.params.push_back(Param("noise", FastNoise2::get_class_static(), &create_resource_to_variant<FastNoise2>));
 
 		t.compile_func = [](CompileContext &ctx) {
 			Ref<FastNoise2> noise = ctx.get_param(0);
 			if (noise.is_null()) {
-				ctx.make_error("FastNoise2 instance is null");
+				ctx.make_error(String(ZN_TTR("{0} instance is null")).format(varray(FastNoise2::get_class_static())));
 				return;
 			}
 			noise->update_generator();
 			if (!noise->is_valid()) {
-				ctx.make_error("FastNoise2 setup is invalid");
+				ctx.make_error(String(ZN_TTR("{0} setup is invalid")).format(varray(FastNoise2::get_class_static())));
 				return;
 			}
 			Params p;
@@ -1766,7 +2055,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
-			VOXEL_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_2_3D");
+			ZN_PROFILE_SCOPE_NAMED("NODE_FAST_NOISE_2_3D");
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
 			const VoxelGraphRuntime::Buffer &y = ctx.get_input(1);
 			const VoxelGraphRuntime::Buffer &z = ctx.get_input(2);
@@ -1786,14 +2075,121 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		};
 	}
 #endif // VOXEL_ENABLE_FAST_NOISE_2
+	{
+		NodeType &t = types[VoxelGeneratorGraph::NODE_EXPRESSION];
+		t.name = "Expression";
+		t.category = CATEGORY_MATH;
+		t.params.push_back(Param("expression", Variant::STRING, "0"));
+		t.outputs.push_back(Port("out"));
+		t.compile_func = [](CompileContext &ctx) {
+			ctx.make_error(ZN_TTR("Internal error, expression wasn't expanded"));
+		};
+		t.is_pseudo_node = true;
+	}
+	{
+		struct Params {
+			unsigned int power;
+		};
+
+		NodeType &t = types[VoxelGeneratorGraph::NODE_POWI];
+		t.name = "Powi";
+		t.category = CATEGORY_MATH;
+		t.inputs.push_back(Port("x"));
+		t.params.push_back(Param("power", Variant::INT, 2));
+		t.outputs.push_back(Port("out"));
+
+		t.compile_func = [](CompileContext &ctx) {
+			const int power = ctx.get_param(0).operator int();
+			if (power < 0) {
+				ctx.make_error(ZN_TTR("Power cannot be negative"));
+			} else {
+				Params p;
+				p.power = power;
+				ctx.set_params(p);
+			}
+		};
+
+		t.process_buffer_func = [](ProcessBufferContext &ctx) {
+			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
+			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
+			const unsigned int power = ctx.get_params<Params>().power;
+			switch (power) {
+				case 0:
+					for (unsigned int i = 0; i < out.size; ++i) {
+						out.data[i] = 1.f;
+					}
+					break;
+				case 1:
+					for (unsigned int i = 0; i < out.size; ++i) {
+						out.data[i] = x.data[i];
+					}
+					break;
+				default:
+					for (unsigned int i = 0; i < out.size; ++i) {
+						float v = x.data[i];
+						for (unsigned int p = 1; p < power; ++p) {
+							v *= v;
+						}
+						out.data[i] = v;
+					}
+					break;
+			}
+		};
+
+		t.range_analysis_func = [](RangeAnalysisContext &ctx) {
+			const Interval x = ctx.get_input(0);
+			const unsigned int power = ctx.get_params<Params>().power;
+			ctx.set_output(0, powi(x, power));
+		};
+
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			const int power = ctx.get_param(0).operator int();
+			if (power < 0) {
+				ctx.make_error(ZN_TTR("Power cannot be negative"));
+			}
+			ctx.add_format("{} = 1.0;\n", ctx.get_output_name(0));
+			for (int i = 0; i < power; ++i) {
+				ctx.add_format("{} *= {};\n", ctx.get_output_name(0), ctx.get_input_name(0));
+			}
+		};
+	}
+	{
+		NodeType &t = types[VoxelGeneratorGraph::NODE_POW];
+		t.name = "Pow";
+		t.category = CATEGORY_MATH;
+		t.inputs.push_back(Port("x"));
+		t.inputs.push_back(Port("p", 2.f));
+		t.outputs.push_back(Port("out"));
+
+		t.process_buffer_func = [](ProcessBufferContext &ctx) {
+			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
+			const VoxelGraphRuntime::Buffer &p = ctx.get_input(1);
+			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
+			for (unsigned int i = 0; i < out.size; ++i) {
+				out.data[i] = Math::pow(x.data[i], p.data[i]);
+			}
+		};
+
+		t.range_analysis_func = [](RangeAnalysisContext &ctx) {
+			const Interval x = ctx.get_input(0);
+			const Interval y = ctx.get_input(1);
+			ctx.set_output(0, pow(x, y));
+		};
+
+		t.shader_gen_func = [](ShaderGenContext &ctx) {
+			ctx.add_format("{} = pow({}, {});\n", ctx.get_output_name(0), ctx.get_input_name(0), ctx.get_input_name(1));
+		};
+	}
+
+	CRASH_COND(_expression_functions.size() > 0);
 
 	for (unsigned int i = 0; i < _types.size(); ++i) {
 		NodeType &t = _types[i];
-		_type_name_to_id.set(t.name, (VoxelGeneratorGraph::NodeTypeID)i);
+		_type_name_to_id.insert({ t.name, (VoxelGeneratorGraph::NodeTypeID)i });
 
 		for (size_t param_index = 0; param_index < t.params.size(); ++param_index) {
 			Param &p = t.params[param_index];
-			t.param_name_to_index.set(p.name, param_index);
+			t.param_name_to_index.insert({ p.name, param_index });
 			p.index = param_index;
 
 			switch (p.type) {
@@ -1810,6 +2206,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 					break;
 
 				case Variant::OBJECT:
+				case Variant::STRING:
 					break;
 
 				default:
@@ -1820,7 +2217,17 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 
 		for (size_t input_index = 0; input_index < t.inputs.size(); ++input_index) {
 			const Port &p = t.inputs[input_index];
-			t.input_name_to_index.set(p.name, input_index);
+			t.input_name_to_index.insert({ p.name, input_index });
+		}
+
+		if (t.expression_func != nullptr) {
+			CRASH_COND(t.expression_func_name == nullptr);
+			ExpressionParser::Function f;
+			f.argument_count = t.inputs.size();
+			f.name = t.expression_func_name;
+			f.func = t.expression_func;
+			f.id = i;
+			_expression_functions.push_back(f);
 		}
 	}
 }
@@ -1870,11 +2277,11 @@ Dictionary VoxelGraphNodeDB::get_type_info_dict(uint32_t id) const {
 
 bool VoxelGraphNodeDB::try_get_type_id_from_name(
 		const String &name, VoxelGeneratorGraph::NodeTypeID &out_type_id) const {
-	const VoxelGeneratorGraph::NodeTypeID *p = _type_name_to_id.getptr(name);
-	if (p == nullptr) {
+	auto it = _type_name_to_id.find(name);
+	if (it == _type_name_to_id.end()) {
 		return false;
 	}
-	out_type_id = *p;
+	out_type_id = it->second;
 	return true;
 }
 
@@ -1882,11 +2289,11 @@ bool VoxelGraphNodeDB::try_get_param_index_from_name(
 		uint32_t type_id, const String &name, uint32_t &out_param_index) const {
 	ERR_FAIL_INDEX_V(type_id, _types.size(), false);
 	const NodeType &t = _types[type_id];
-	const uint32_t *p = t.param_name_to_index.getptr(name);
-	if (p == nullptr) {
+	auto it = t.param_name_to_index.find(name);
+	if (it == t.param_name_to_index.end()) {
 		return false;
 	}
-	out_param_index = *p;
+	out_param_index = it->second;
 	return true;
 }
 
@@ -1894,11 +2301,11 @@ bool VoxelGraphNodeDB::try_get_input_index_from_name(
 		uint32_t type_id, const String &name, uint32_t &out_input_index) const {
 	ERR_FAIL_INDEX_V(type_id, _types.size(), false);
 	const NodeType &t = _types[type_id];
-	const uint32_t *p = t.input_name_to_index.getptr(name);
-	if (p == nullptr) {
+	auto it = t.input_name_to_index.find(name);
+	if (it == t.input_name_to_index.end()) {
 		return false;
 	}
-	out_input_index = *p;
+	out_input_index = it->second;
 	return true;
 }
 

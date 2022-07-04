@@ -1,12 +1,10 @@
 Import('env')
 Import('env_modules')
 
-# Note, support for FastNoise2 requires C++17
-FAST_NOISE_2_SRC = True
+# Note, support for FastNoise2 requires C++17, and doesn't work yet on ARM.
+FAST_NOISE_2_SRC = env["voxel_fast_noise_2"]
 
-RUN_TESTS = False
-if env['target'] == 'debug':
-	RUN_TESTS = True
+RUN_TESTS = env["voxel_tests"]
 
 env_voxel = env_modules.Clone()
 
@@ -37,16 +35,18 @@ voxel_files = [
 
 	"util/godot/*.cpp",
 
-	#"util/noise/*.cpp",
-	"util/noise/fast_noise_lite.cpp",
-	"util/noise/fast_noise_lite_gradient.cpp",
-	"util/noise/fast_noise_lite_range.cpp",
-	"util/noise/osn_noise_range.cpp",
+	"util/noise/fast_noise_lite/*.cpp",
+	"util/noise/gd_noise_range.cpp",
+
+	"util/thread/*.cpp",
 
 	"util/tasks/*.cpp",
+	"util/tasks/godot/*.cpp",
 
 	"terrain/*.cpp",
 	"terrain/instancing/*.cpp",
+	"terrain/fixed_lod/*.cpp",
+	"terrain/variable_lod/*.cpp",
 
 	"server/*.cpp",
 	"edition/*.cpp",
@@ -66,6 +66,7 @@ if env["tools"]:
 		"editor/instancer/*.cpp",
 		"editor/instance_library/*.cpp",
 		"editor/vox/*.cpp",
+		"editor/mesh_sdf/*.cpp",
 	]
 	voxel_files += voxel_editor_files
 
@@ -76,7 +77,9 @@ env_voxel.Append(CPPDEFINES=[
 	# Godot 4 includes an official version, which means they would both conflict at linking time.
 	# To prevent this clash we wrap the entire library within an additional namespace.
 	# This should be solved either by solving issue #311 or by porting the module to a dynamic library (GDExtension).
-	"MESHOPTIMIZER_ZYLANN_WRAP_LIBRARY_IN_NAMESPACE"
+	"MESHOPTIMIZER_ZYLANN_WRAP_LIBRARY_IN_NAMESPACE",
+	# Tell engine-agnostic code we are using Godot Engine
+	"ZN_GODOT"
 ])
 
 if RUN_TESTS:

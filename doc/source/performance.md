@@ -25,7 +25,6 @@ Parameter name                              | Type    | Description
 Several notes:
 
 - It is recommended to not use all available threads for voxel stuff. Games use more for other things, and players may even do something else in background (such as music, YouTube playlist or voice chat).
-- The module uses one additional streaming thread for file I/O, which is always reserved, and will count in the amount of threads allocated.
 - It is not possible to use zero threads. The module is designed to use threads at the moment.
 - You can check at runtime how many theads are allocated with a script and using `VoxelServer.get_stats()`. It is also printed if `debug/settings/stdout/verbose_stdout` is enabled in project settings (or `-v` in command line).
 - Changing these settings requires an editor restart (or game restart) to take effect.
@@ -99,6 +98,7 @@ It is not possible for the module to just "pool the meshes", because when new me
 A mitigation is in place to smooth the spikes by spreading the amount of destroyed meshes over time, but the slowdown is still noticeable.
 
 The only workarounds involve limiting the game:
+
 - Increase mesh block size to 32 to reduce their number, at the expense of edition cost
 - Limit the speed at which the player can move when close to voxels
 - Reduce LOD distance so less blocks have to be destroyed, at the expense of quality

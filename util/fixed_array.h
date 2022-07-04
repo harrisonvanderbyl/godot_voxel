@@ -1,7 +1,7 @@
-#ifndef FIXED_ARRAY_H
-#define FIXED_ARRAY_H
+#ifndef ZN_FIXED_ARRAY_H
+#define ZN_FIXED_ARRAY_H
 
-#include <core/error/error_macros.h>
+#include "errors.h"
 
 namespace zylann {
 
@@ -10,30 +10,18 @@ namespace zylann {
 template <typename T, unsigned int N>
 class FixedArray {
 public:
-	inline FixedArray() {}
-
-	inline FixedArray(T defval) {
-		fill(defval);
-	}
-
-	inline void fill(T v) {
-		for (unsigned int i = 0; i < N; ++i) {
-			_data[i] = v;
-		}
-	}
-
 	// TODO Optimization: move semantics
 
 	inline T &operator[](unsigned int i) {
 #ifdef DEBUG_ENABLED
-		CRASH_COND(i >= N);
+		ZN_ASSERT(i < N);
 #endif
 		return _data[i];
 	}
 
 	inline const T &operator[](unsigned int i) const {
 #ifdef DEBUG_ENABLED
-		CRASH_COND(i >= N);
+		ZN_ASSERT(i < N);
 #endif
 		return _data[i];
 	}
@@ -77,6 +65,15 @@ private:
 	T _data[N];
 };
 
+// Fills array with the same value.
+// Not a method because it would not compile with non-copyable types.
+template <typename T, unsigned int N>
+inline void fill(FixedArray<T, N> &dst, const T v) {
+	for (unsigned int i = 0; i < dst.size(); ++i) {
+		dst[i] = v;
+	}
+}
+
 } // namespace zylann
 
-#endif // FIXED_ARRAY_H
+#endif // ZN_FIXED_ARRAY_H

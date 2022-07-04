@@ -1,9 +1,11 @@
 #ifndef VOXEL_STREAM_H
 #define VOXEL_STREAM_H
 
+#include "../util/memory.h"
+#include "../util/thread/rw_lock.h"
 #include "instance_data.h"
+
 #include <core/io/resource.h>
-#include <memory>
 
 namespace zylann::voxel {
 
@@ -49,7 +51,7 @@ public:
 	};
 
 	struct InstancesQueryData {
-		std::unique_ptr<InstanceBlockData> data;
+		UniquePtr<InstanceBlockData> data;
 		Vector3i position;
 		uint8_t lod;
 		ResultCode result;
@@ -80,7 +82,7 @@ public:
 	struct FullLoadingResult {
 		struct Block {
 			std::shared_ptr<VoxelBufferInternal> voxels;
-			std::unique_ptr<InstanceBlockData> instances_data;
+			UniquePtr<InstanceBlockData> instances_data;
 			Vector3i position;
 			unsigned int lod;
 		};
@@ -108,6 +110,8 @@ public:
 	virtual int get_lod_count() const;
 
 	// Should generated blocks be saved immediately? If not, they will be saved only when modified.
+	// If this is enabled, generated blocks will immediately be considered edited and will be saved to the stream.
+	// Warning: this is incompatible with non-destructive workflows such as modifiers.
 	void set_save_generator_output(bool enabled);
 	bool get_save_generator_output() const;
 
