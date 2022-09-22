@@ -2,8 +2,8 @@
 #define VOXEL_STREAM_REGION_H
 
 #include "../../util/fixed_array.h"
+#include "../../util/thread/mutex.h"
 #include "../file_utils.h"
-#include "../voxel_block_serializer.h"
 #include "../voxel_stream.h"
 #include "region_file.h"
 
@@ -26,11 +26,11 @@ public:
 	VoxelStreamRegionFiles();
 	~VoxelStreamRegionFiles();
 
-	Result emerge_block(VoxelBufferInternal &out_buffer, Vector3i origin_in_voxels, int lod) override;
-	void immerge_block(VoxelBufferInternal &buffer, Vector3i origin_in_voxels, int lod) override;
+	void load_voxel_block(VoxelStream::VoxelQueryData &query) override;
+	void save_voxel_block(VoxelStream::VoxelQueryData &query) override;
 
-	void emerge_blocks(Span<VoxelBlockRequest> p_blocks, Vector<Result> &out_results) override;
-	void immerge_blocks(Span<VoxelBlockRequest> p_blocks) override;
+	void load_voxel_blocks(Span<VoxelStream::VoxelQueryData> p_blocks) override;
+	void save_voxel_blocks(Span<VoxelStream::VoxelQueryData> p_blocks) override;
 
 	int get_used_channels_mask() const override;
 
@@ -66,8 +66,8 @@ private:
 		EMERGE_FAILED
 	};
 
-	EmergeResult _emerge_block(VoxelBufferInternal &out_buffer, Vector3i origin_in_voxels, int lod);
-	void _immerge_block(VoxelBufferInternal &voxel_buffer, Vector3i origin_in_voxels, int lod);
+	EmergeResult _load_block(VoxelBufferInternal &out_buffer, Vector3i origin_in_voxels, int lod);
+	void _save_block(VoxelBufferInternal &voxel_buffer, Vector3i origin_in_voxels, int lod);
 
 	FileResult save_meta();
 	FileResult load_meta();
@@ -93,11 +93,12 @@ private:
 	void _convert_files(Meta new_meta);
 
 	// Orders block requests so those querying the same regions get grouped together
-	struct BlockRequestComparator {
+	struct BlockQueryComparator {
 		VoxelStreamRegionFiles *self = nullptr;
 
 		// operator<
-		_FORCE_INLINE_ bool operator()(const VoxelBlockRequest &a, const VoxelBlockRequest &b) const {
+		_FORCE_INLINE_ bool operator()(
+				const VoxelStream::VoxelQueryData &a, const VoxelStream::VoxelQueryData &b) const {
 			if (a.lod < b.lod) {
 				return true;
 			} else if (a.lod > b.lod) {
@@ -110,8 +111,6 @@ private:
 			return rpos_a < rpos_b;
 		}
 	};
-
-	static thread_local BlockSerializer _block_serializer;
 
 	// TODO This is not thread-friendly.
 	// `VoxelRegionFile` is not thread-safe so we have to limit the usage to one thread at once, blocking the others.

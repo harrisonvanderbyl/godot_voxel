@@ -6,14 +6,13 @@ VoxelGeneratorFlat::VoxelGeneratorFlat() {}
 
 VoxelGeneratorFlat::~VoxelGeneratorFlat() {}
 
-void VoxelGeneratorFlat::set_channel(VoxelBuffer::ChannelId p_channel) {
-	const VoxelBufferInternal::ChannelId channel = VoxelBufferInternal::ChannelId(p_channel);
-	ERR_FAIL_INDEX(channel, VoxelBufferInternal::MAX_CHANNELS);
+void VoxelGeneratorFlat::set_channel(VoxelBufferInternal::ChannelId p_channel) {
+	ERR_FAIL_INDEX(p_channel, VoxelBufferInternal::MAX_CHANNELS);
 	bool changed = false;
 	{
 		RWLockWrite wlock(_parameters_lock);
-		if (_parameters.channel != channel) {
-			_parameters.channel = channel;
+		if (_parameters.channel != p_channel) {
+			_parameters.channel = p_channel;
 			changed = true;
 		}
 	}
@@ -22,9 +21,9 @@ void VoxelGeneratorFlat::set_channel(VoxelBuffer::ChannelId p_channel) {
 	}
 }
 
-VoxelBuffer::ChannelId VoxelGeneratorFlat::get_channel() const {
+VoxelBufferInternal::ChannelId VoxelGeneratorFlat::get_channel() const {
 	RWLockRead rlock(_parameters_lock);
-	return VoxelBuffer::ChannelId(_parameters.channel);
+	return _parameters.channel;
 }
 
 int VoxelGeneratorFlat::get_used_channels_mask() const {
@@ -52,7 +51,7 @@ float VoxelGeneratorFlat::get_height() const {
 	return _parameters.height;
 }
 
-VoxelGenerator::Result VoxelGeneratorFlat::generate_block(VoxelBlockRequest &input) {
+VoxelGenerator::Result VoxelGeneratorFlat::generate_block(VoxelGenerator::VoxelQueryData &input) {
 	Result result;
 
 	Parameters params;
@@ -65,7 +64,7 @@ VoxelGenerator::Result VoxelGeneratorFlat::generate_block(VoxelBlockRequest &inp
 	const Vector3i origin = input.origin_in_voxels;
 	const int channel = params.channel;
 	const Vector3i bs = out_buffer.get_size();
-	const bool use_sdf = channel == VoxelBuffer::CHANNEL_SDF;
+	const bool use_sdf = channel == VoxelBufferInternal::CHANNEL_SDF;
 	const float margin = 1 << input.lod;
 	const int lod = input.lod;
 
@@ -76,7 +75,11 @@ VoxelGenerator::Result VoxelGeneratorFlat::generate_block(VoxelBlockRequest &inp
 	}
 	if (origin.y + (bs.y << lod) < params.height - margin) {
 		// The top of the block is below the lowest ground can go
-		out_buffer.clear_channel(params.channel, use_sdf ? 0 : params.voxel_type);
+		if (use_sdf) {
+			out_buffer.clear_channel_f(params.channel, -1);
+		} else {
+			out_buffer.clear_channel(params.channel, params.voxel_type);
+		}
 		result.max_lod_hint = true;
 		return result;
 	}
@@ -120,9 +123,17 @@ VoxelGenerator::Result VoxelGeneratorFlat::generate_block(VoxelBlockRequest &inp
 	return result;
 }
 
+void VoxelGeneratorFlat::_b_set_channel(gd::VoxelBuffer::ChannelId p_channel) {
+	set_channel(VoxelBufferInternal::ChannelId(p_channel));
+}
+
+gd::VoxelBuffer::ChannelId VoxelGeneratorFlat::_b_get_channel() const {
+	return gd::VoxelBuffer::ChannelId(get_channel());
+}
+
 void VoxelGeneratorFlat::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_channel", "channel"), &VoxelGeneratorFlat::set_channel);
-	ClassDB::bind_method(D_METHOD("get_channel"), &VoxelGeneratorFlat::get_channel);
+	ClassDB::bind_method(D_METHOD("set_channel", "channel"), &VoxelGeneratorFlat::_b_set_channel);
+	ClassDB::bind_method(D_METHOD("get_channel"), &VoxelGeneratorFlat::_b_get_channel);
 
 	ClassDB::bind_method(D_METHOD("set_voxel_type", "id"), &VoxelGeneratorFlat::set_voxel_type);
 	ClassDB::bind_method(D_METHOD("get_voxel_type"), &VoxelGeneratorFlat::get_voxel_type);
@@ -130,7 +141,7 @@ void VoxelGeneratorFlat::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_height", "h"), &VoxelGeneratorFlat::set_height);
 	ClassDB::bind_method(D_METHOD("get_height"), &VoxelGeneratorFlat::get_height);
 
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "channel", PROPERTY_HINT_ENUM, VoxelBuffer::CHANNEL_ID_HINT_STRING),
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "channel", PROPERTY_HINT_ENUM, gd::VoxelBuffer::CHANNEL_ID_HINT_STRING),
 			"set_channel", "get_channel");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "height"), "set_height", "get_height");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "voxel_type", PROPERTY_HINT_RANGE, "0,65536,1"), "set_voxel_type",

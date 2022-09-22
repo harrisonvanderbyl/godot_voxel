@@ -1,7 +1,8 @@
 #include "voxel_mesher_blocky.h"
 #include "../../constants/cube_tables.h"
-#include "../../storage/voxel_buffer.h"
-#include "../../util/funcs.h"
+#include "../../storage/voxel_buffer_internal.h"
+#include "../../util/godot/funcs.h"
+#include "../../util/math/conv.h"
 #include "../../util/span.h"
 #include <core/os/os.h>
 
@@ -42,13 +43,19 @@ inline bool contributes_to_ao(const VoxelBlockyLibrary::BakedData &lib, uint32_t
 	return true;
 }
 
+static thread_local std::vector<int> tls_index_offsets;
+
 } // namespace
 
 template <typename Type_T>
-void generate_blocky_mesh(
-		FixedArray<VoxelMesherBlocky::Arrays, VoxelMesherBlocky::MAX_MATERIALS> &out_arrays_per_material,
-		const Span<Type_T> type_buffer, const Vector3i block_size, const VoxelBlockyLibrary::BakedData &library,
-		bool bake_occlusion, float baked_occlusion_darkness) {
+void generate_blocky_mesh(std::vector<VoxelMesherBlocky::Arrays> &out_arrays_per_material,
+		VoxelMesher::Output::CollisionSurface *collision_surface, const Span<Type_T> type_buffer,
+		const Vector3i block_size, const VoxelBlockyLibrary::BakedData &library, bool bake_occlusion,
+		float baked_occlusion_darkness) {
+	// TODO Optimization: not sure if this mandates a template function. There is so much more happening in this
+	// function other than reading voxels, although reading is on the hottest path. It needs to be profiled. If
+	// changing makes no difference, we could use a function pointer or switch inside instead to reduce executable size.
+
 	ERR_FAIL_COND(block_size.x < static_cast<int>(2 * VoxelMesherBlocky::PADDING) ||
 			block_size.y < static_cast<int>(2 * VoxelMesherBlocky::PADDING) ||
 			block_size.z < static_cast<int>(2 * VoxelMesherBlocky::PADDING));
@@ -63,7 +70,11 @@ void generate_blocky_mesh(
 	const Vector3i min = Vector3iUtil::create(VoxelMesherBlocky::PADDING);
 	const Vector3i max = block_size - Vector3iUtil::create(VoxelMesherBlocky::PADDING);
 
-	int index_offsets[VoxelMesherBlocky::MAX_MATERIALS] = { 0 };
+	std::vector<int> &index_offsets = tls_index_offsets;
+	index_offsets.clear();
+	index_offsets.resize(out_arrays_per_material.size(), 0);
+
+	int collision_surface_index_offset = 0;
 
 	FixedArray<int, Cube::SIDE_COUNT> side_neighbor_lut;
 	side_neighbor_lut[Cube::SIDE_LEFT] = row_size;
@@ -130,78 +141,87 @@ void generate_blocky_mesh(
 				const int voxel_index = y + x * row_size + z * deck_size;
 				const int voxel_id = type_buffer[voxel_index];
 
-				if (voxel_id != 0 && library.has_model(voxel_id)) {
-					const VoxelBlockyModel::BakedData &voxel = library.models[voxel_id];
+				if (voxel_id == VoxelBlockyModel::AIR_ID || !library.has_model(voxel_id)) {
+					continue;
+				}
 
-					VoxelMesherBlocky::Arrays &arrays = out_arrays_per_material[voxel.material_id];
-					int &index_offset = index_offsets[voxel.material_id];
+				const VoxelBlockyModel::BakedData &voxel = library.models[voxel_id];
+				const VoxelBlockyModel::BakedData::Model &model = voxel.model;
 
-					// Hybrid approach: extract cube faces and decimate those that aren't visible,
-					// and still allow voxels to have geometry that is not a cube
+				// Hybrid approach: extract cube faces and decimate those that aren't visible,
+				// and still allow voxels to have geometry that is not a cube.
 
-					// Sides
-					for (unsigned int side = 0; side < Cube::SIDE_COUNT; ++side) {
-						const std::vector<Vector3> &side_positions = voxel.model.side_positions[side];
+				// Sides
+				for (unsigned int side = 0; side < Cube::SIDE_COUNT; ++side) {
+					if ((model.empty_sides_mask & (1 << side)) != 0) {
+						// This side is empty
+						continue;
+					}
+
+					const uint32_t neighbor_voxel_id = type_buffer[voxel_index + side_neighbor_lut[side]];
+
+					if (!is_face_visible(library, voxel, neighbor_voxel_id, side)) {
+						continue;
+					}
+
+					// The face is visible
+
+					int shaded_corner[8] = { 0 };
+
+					if (bake_occlusion) {
+						// Combinatory solution for
+						// https://0fps.net/2013/07/03/ambient-occlusion-for-minecraft-like-worlds/ (inverted)
+						//	function vertexAO(side1, side2, corner) {
+						//	  if(side1 && side2) {
+						//		return 0
+						//	  }
+						//	  return 3 - (side1 + side2 + corner)
+						//	}
+
+						for (unsigned int j = 0; j < 4; ++j) {
+							const unsigned int edge = Cube::g_side_edges[side][j];
+							const int edge_neighbor_id = type_buffer[voxel_index + edge_neighbor_lut[edge]];
+							if (contributes_to_ao(library, edge_neighbor_id)) {
+								++shaded_corner[Cube::g_edge_corners[edge][0]];
+								++shaded_corner[Cube::g_edge_corners[edge][1]];
+							}
+						}
+						for (unsigned int j = 0; j < 4; ++j) {
+							const unsigned int corner = Cube::g_side_corners[side][j];
+							if (shaded_corner[corner] == 2) {
+								shaded_corner[corner] = 3;
+							} else {
+								const int corner_neigbor_id = type_buffer[voxel_index + corner_neighbor_lut[corner]];
+								if (contributes_to_ao(library, corner_neigbor_id)) {
+									++shaded_corner[corner];
+								}
+							}
+						}
+					}
+
+					// Subtracting 1 because the data is padded
+					Vector3f pos(x - 1, y - 1, z - 1);
+
+					for (unsigned int surface_index = 0; surface_index < model.surface_count; ++surface_index) {
+						const VoxelBlockyModel::BakedData::Surface &surface = model.surfaces[surface_index];
+
+						VoxelMesherBlocky::Arrays &arrays = out_arrays_per_material[surface.material_id];
+
+						ZN_ASSERT(surface.material_id >= 0 && surface.material_id < index_offsets.size());
+						int &index_offset = index_offsets[surface.material_id];
+
+						const std::vector<Vector3f> &side_positions = surface.side_positions[side];
 						const unsigned int vertex_count = side_positions.size();
 
-						if (vertex_count == 0) {
-							continue;
-						}
-
-						const uint32_t neighbor_voxel_id = type_buffer[voxel_index + side_neighbor_lut[side]];
-
-						if (!is_face_visible(library, voxel, neighbor_voxel_id, side)) {
-							continue;
-						}
-
-						// The face is visible
-
-						int shaded_corner[8] = { 0 };
-
-						if (bake_occlusion) {
-							// Combinatory solution for
-							// https://0fps.net/2013/07/03/ambient-occlusion-for-minecraft-like-worlds/ (inverted)
-							//	function vertexAO(side1, side2, corner) {
-							//	  if(side1 && side2) {
-							//		return 0
-							//	  }
-							//	  return 3 - (side1 + side2 + corner)
-							//	}
-
-							for (unsigned int j = 0; j < 4; ++j) {
-								const unsigned int edge = Cube::g_side_edges[side][j];
-								const int edge_neighbor_id = type_buffer[voxel_index + edge_neighbor_lut[edge]];
-								if (contributes_to_ao(library, edge_neighbor_id)) {
-									++shaded_corner[Cube::g_edge_corners[edge][0]];
-									++shaded_corner[Cube::g_edge_corners[edge][1]];
-								}
-							}
-							for (unsigned int j = 0; j < 4; ++j) {
-								const unsigned int corner = Cube::g_side_corners[side][j];
-								if (shaded_corner[corner] == 2) {
-									shaded_corner[corner] = 3;
-								} else {
-									const int corner_neigbor_id =
-											type_buffer[voxel_index + corner_neighbor_lut[corner]];
-									if (contributes_to_ao(library, corner_neigbor_id)) {
-										++shaded_corner[corner];
-									}
-								}
-							}
-						}
-
-						const std::vector<Vector2> &side_uvs = voxel.model.side_uvs[side];
-						const std::vector<float> &side_tangents = voxel.model.side_tangents[side];
-
-						// Subtracting 1 because the data is padded
-						Vector3 pos(x - 1, y - 1, z - 1);
+						const std::vector<Vector2f> &side_uvs = surface.side_uvs[side];
+						const std::vector<float> &side_tangents = surface.side_tangents[side];
 
 						// Append vertices of the faces in one go, don't use push_back
 
 						{
 							const int append_index = arrays.positions.size();
 							arrays.positions.resize(arrays.positions.size() + vertex_count);
-							Vector3 *w = arrays.positions.data() + append_index;
+							Vector3f *w = arrays.positions.data() + append_index;
 							for (unsigned int i = 0; i < vertex_count; ++i) {
 								w[i] = side_positions[i] + pos;
 							}
@@ -210,7 +230,7 @@ void generate_blocky_mesh(
 						{
 							const int append_index = arrays.uvs.size();
 							arrays.uvs.resize(arrays.uvs.size() + vertex_count);
-							memcpy(arrays.uvs.data() + append_index, side_uvs.data(), vertex_count * sizeof(Vector2));
+							memcpy(arrays.uvs.data() + append_index, side_uvs.data(), vertex_count * sizeof(Vector2f));
 						}
 
 						if (side_tangents.size() > 0) {
@@ -223,9 +243,9 @@ void generate_blocky_mesh(
 						{
 							const int append_index = arrays.normals.size();
 							arrays.normals.resize(arrays.normals.size() + vertex_count);
-							Vector3 *w = arrays.normals.data() + append_index;
+							Vector3f *w = arrays.normals.data() + append_index;
 							for (unsigned int i = 0; i < vertex_count; ++i) {
-								w[i] = Cube::g_side_normals[side];
+								w[i] = to_vec3f(Cube::g_side_normals[side]);
 							}
 						}
 
@@ -237,7 +257,7 @@ void generate_blocky_mesh(
 
 							if (bake_occlusion) {
 								for (unsigned int i = 0; i < vertex_count; ++i) {
-									Vector3 v = side_positions[i];
+									const Vector3f vertex_pos = side_positions[i];
 
 									// General purpose occlusion colouring.
 									// TODO Optimize for cubes
@@ -250,7 +270,8 @@ void generate_blocky_mesh(
 											float s = baked_occlusion_darkness *
 													static_cast<float>(shaded_corner[corner]);
 											//float k = 1.f - Cube::g_corner_position[corner].distance_to(v);
-											float k = 1.f - Cube::g_corner_position[corner].distance_squared_to(v);
+											float k = 1.f -
+													math::distance_squared(Cube::g_corner_position[corner], vertex_pos);
 											if (k < 0.0) {
 												k = 0.0;
 											}
@@ -271,7 +292,7 @@ void generate_blocky_mesh(
 							}
 						}
 
-						const std::vector<int> &side_indices = voxel.model.side_indices[side];
+						const std::vector<int> &side_indices = surface.side_indices[side];
 						const unsigned int index_count = side_indices.size();
 
 						{
@@ -283,47 +304,95 @@ void generate_blocky_mesh(
 							}
 						}
 
+						if (collision_surface != nullptr && surface.collision_enabled) {
+							std::vector<Vector3f> &dst_positions = collision_surface->positions;
+							std::vector<int> &dst_indices = collision_surface->indices;
+
+							{
+								const unsigned int append_index = dst_positions.size();
+								dst_positions.resize(dst_positions.size() + vertex_count);
+								Vector3f *w = dst_positions.data() + append_index;
+								for (unsigned int i = 0; i < vertex_count; ++i) {
+									w[i] = side_positions[i] + pos;
+								}
+							}
+
+							{
+								int i = dst_indices.size();
+								dst_indices.resize(dst_indices.size() + index_count);
+								int *w = dst_indices.data();
+								for (unsigned int j = 0; j < index_count; ++j) {
+									w[i++] = collision_surface_index_offset + side_indices[j];
+								}
+							}
+
+							collision_surface_index_offset += vertex_count;
+						}
+
 						index_offset += vertex_count;
 					}
+				}
 
-					// Inside
-					if (voxel.model.positions.size() != 0) {
-						// TODO Get rid of push_backs
+				// Inside
+				for (unsigned int surface_index = 0; surface_index < model.surface_count; ++surface_index) {
+					const VoxelBlockyModel::BakedData::Surface &surface = model.surfaces[surface_index];
+					if (surface.positions.size() == 0) {
+						continue;
+					}
+					// TODO Get rid of push_backs
 
-						const std::vector<Vector3> &positions = voxel.model.positions;
-						const unsigned int vertex_count = positions.size();
-						const Color modulate_color = voxel.color;
+					VoxelMesherBlocky::Arrays &arrays = out_arrays_per_material[surface.material_id];
 
-						const std::vector<Vector3> &normals = voxel.model.normals;
-						const std::vector<Vector2> &uvs = voxel.model.uvs;
-						const std::vector<float> &tangents = voxel.model.tangents;
+					ZN_ASSERT(surface.material_id >= 0 && surface.material_id < index_offsets.size());
+					int &index_offset = index_offsets[surface.material_id];
 
-						const Vector3 pos(x - 1, y - 1, z - 1);
+					const std::vector<Vector3f> &positions = surface.positions;
+					const unsigned int vertex_count = positions.size();
+					const Color modulate_color = voxel.color;
 
-						if (tangents.size() > 0) {
-							const int append_index = arrays.tangents.size();
-							arrays.tangents.resize(arrays.tangents.size() + vertex_count * 4);
-							memcpy(arrays.tangents.data() + append_index, tangents.data(),
-									(vertex_count * 4) * sizeof(float));
-						}
+					const std::vector<Vector3f> &normals = surface.normals;
+					const std::vector<Vector2f> &uvs = surface.uvs;
+					const std::vector<float> &tangents = surface.tangents;
+
+					const Vector3f pos(x - 1, y - 1, z - 1);
+
+					if (tangents.size() > 0) {
+						const int append_index = arrays.tangents.size();
+						arrays.tangents.resize(arrays.tangents.size() + vertex_count * 4);
+						memcpy(arrays.tangents.data() + append_index, tangents.data(),
+								(vertex_count * 4) * sizeof(float));
+					}
+
+					for (unsigned int i = 0; i < vertex_count; ++i) {
+						arrays.normals.push_back(normals[i]);
+						arrays.uvs.push_back(uvs[i]);
+						arrays.positions.push_back(positions[i] + pos);
+						// TODO handle ambient occlusion on inner parts
+						arrays.colors.push_back(modulate_color);
+					}
+
+					const std::vector<int> &indices = surface.indices;
+					const unsigned int index_count = indices.size();
+
+					for (unsigned int i = 0; i < index_count; ++i) {
+						arrays.indices.push_back(index_offset + indices[i]);
+					}
+
+					if (collision_surface != nullptr && surface.collision_enabled) {
+						std::vector<Vector3f> &dst_positions = collision_surface->positions;
+						std::vector<int> &dst_indices = collision_surface->indices;
 
 						for (unsigned int i = 0; i < vertex_count; ++i) {
-							arrays.normals.push_back(normals[i]);
-							arrays.uvs.push_back(uvs[i]);
-							arrays.positions.push_back(positions[i] + pos);
-							// TODO handle ambient occlusion on inner parts
-							arrays.colors.push_back(modulate_color);
+							dst_positions.push_back(positions[i] + pos);
 						}
-
-						const std::vector<int> &indices = voxel.model.indices;
-						const unsigned int index_count = indices.size();
-
 						for (unsigned int i = 0; i < index_count; ++i) {
-							arrays.indices.push_back(index_offset + indices[i]);
+							dst_indices.push_back(collision_surface_index_offset + indices[i]);
 						}
 
-						index_offset += vertex_count;
+						collision_surface_index_offset += vertex_count;
 					}
+
+					index_offset += vertex_count;
 				}
 			}
 		}
@@ -371,7 +440,7 @@ bool VoxelMesherBlocky::get_occlusion_enabled() const {
 }
 
 void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::Input &input) {
-	const int channel = VoxelBuffer::CHANNEL_TYPE;
+	const int channel = VoxelBufferInternal::CHANNEL_TYPE;
 	Parameters params;
 	{
 		RWLockRead rlock(_parameters_lock);
@@ -382,8 +451,9 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 
 	Cache &cache = _cache;
 
-	for (unsigned int i = 0; i < cache.arrays_per_material.size(); ++i) {
-		Arrays &a = cache.arrays_per_material[i];
+	std::vector<Arrays> &arrays_per_material = cache.arrays_per_material;
+	for (unsigned int i = 0; i < arrays_per_material.size(); ++i) {
+		Arrays &a = arrays_per_material[i];
 		a.clear();
 	}
 
@@ -402,7 +472,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 
 	const VoxelBufferInternal &voxels = input.voxels;
 #ifdef TOOLS_ENABLED
-	if (input.lod != 0) {
+	if (input.lod_index != 0) {
 		WARN_PRINT("VoxelMesherBlocky received lod != 0, it is not supported");
 	}
 #endif
@@ -448,20 +518,33 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 	const Vector3i block_size = voxels.get_size();
 	const VoxelBufferInternal::Depth channel_depth = voxels.get_channel_depth(channel);
 
+	VoxelMesher::Output::CollisionSurface *collision_surface = nullptr;
+	if (input.collision_hint) {
+		collision_surface = &output.collision_surface;
+	}
+
+	unsigned int material_count = 0;
 	{
 		// We can only access baked data. Only this data is made for multithreaded access.
 		RWLockRead lock(params.library->get_baked_data_rw_lock());
 		const VoxelBlockyLibrary::BakedData &library_baked_data = params.library->get_baked_data();
 
+		material_count = library_baked_data.indexed_materials_count;
+
+		if (arrays_per_material.size() < material_count) {
+			arrays_per_material.resize(material_count);
+		}
+
 		switch (channel_depth) {
 			case VoxelBufferInternal::DEPTH_8_BIT:
-				generate_blocky_mesh(cache.arrays_per_material, raw_channel, block_size, library_baked_data,
-						params.bake_occlusion, baked_occlusion_darkness);
+				generate_blocky_mesh(arrays_per_material, collision_surface, raw_channel, block_size,
+						library_baked_data, params.bake_occlusion, baked_occlusion_darkness);
 				break;
 
 			case VoxelBufferInternal::DEPTH_16_BIT:
-				generate_blocky_mesh(cache.arrays_per_material, raw_channel.reinterpret_cast_to<uint16_t>(), block_size,
-						library_baked_data, params.bake_occlusion, baked_occlusion_darkness);
+				generate_blocky_mesh(arrays_per_material, collision_surface,
+						raw_channel.reinterpret_cast_to<uint16_t>(), block_size, library_baked_data,
+						params.bake_occlusion, baked_occlusion_darkness);
 				break;
 
 			default:
@@ -470,10 +553,12 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		}
 	}
 
-	// TODO We could return a single byte array and use Mesh::add_surface down the line?
+	// TODO Optimization: we could return a single byte array and use Mesh::add_surface down the line?
+	// That API does not seem to exist yet though.
 
-	for (unsigned int i = 0; i < MAX_MATERIALS; ++i) {
-		const Arrays &arrays = cache.arrays_per_material[i];
+	for (unsigned int material_index = 0; material_index < material_count; ++material_index) {
+		const Arrays &arrays = arrays_per_material[material_index];
+
 		if (arrays.positions.size() != 0) {
 			Array mesh_arrays;
 			mesh_arrays.resize(Mesh::ARRAY_MAX);
@@ -485,9 +570,9 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 				PackedColorArray colors;
 				PackedInt32Array indices;
 
-				raw_copy_to(positions, arrays.positions);
-				raw_copy_to(uvs, arrays.uvs);
-				raw_copy_to(normals, arrays.normals);
+				copy_to(positions, arrays.positions);
+				copy_to(uvs, arrays.uvs);
+				copy_to(normals, arrays.normals);
 				raw_copy_to(colors, arrays.colors);
 				raw_copy_to(indices, arrays.indices);
 
@@ -496,6 +581,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 				mesh_arrays[Mesh::ARRAY_NORMAL] = normals;
 				mesh_arrays[Mesh::ARRAY_COLOR] = colors;
 				mesh_arrays[Mesh::ARRAY_INDEX] = indices;
+
 				if (arrays.tangents.size() > 0) {
 					PackedFloat32Array tangents;
 					raw_copy_to(tangents, arrays.tangents);
@@ -503,12 +589,15 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 				}
 			}
 
-			output.surfaces.push_back(mesh_arrays);
-
-		} else {
-			// Empty
-			output.surfaces.push_back(Array());
+			output.surfaces.push_back(Output::Surface());
+			Output::Surface &surface = output.surfaces.back();
+			surface.arrays = mesh_arrays;
+			surface.material_index = material_index;
 		}
+		//  else {
+		// 	// Empty
+		// 	output.surfaces.push_back(Output::Surface());
+		// }
 	}
 
 	output.primitive_type = Mesh::PRIMITIVE_TRIANGLES;
@@ -531,8 +620,60 @@ Ref<Resource> VoxelMesherBlocky::duplicate(bool p_subresources) const {
 }
 
 int VoxelMesherBlocky::get_used_channels_mask() const {
-	return (1 << VoxelBuffer::CHANNEL_TYPE);
+	return (1 << VoxelBufferInternal::CHANNEL_TYPE);
 }
+
+Ref<Material> VoxelMesherBlocky::get_material_by_index(unsigned int index) const {
+	Ref<VoxelBlockyLibrary> lib = get_library();
+	if (lib.is_null()) {
+		return Ref<Material>();
+	}
+	return lib->get_material_by_index(index);
+}
+
+#ifdef TOOLS_ENABLED
+
+void VoxelMesherBlocky::get_configuration_warnings(TypedArray<String> &out_warnings) const {
+	Ref<VoxelBlockyLibrary> library = get_library();
+
+	if (library.is_null()) {
+		out_warnings.append(TTR(VoxelMesherBlocky::get_class_static() + " has no " +
+				VoxelBlockyLibrary::get_class_static() + " assigned."));
+		return;
+	}
+
+	if (library->get_voxel_count() == 0) {
+		out_warnings.append(TTR("The " + VoxelBlockyLibrary::get_class_static() + " assigned to " +
+				VoxelMesherBlocky::get_class_static() + " has an empty list of " +
+				VoxelBlockyModel::get_class_static() + "s."));
+		return;
+	}
+
+	bool has_solid_model = false;
+	for (unsigned int i = 0; i < library->get_voxel_count() && !has_solid_model; ++i) {
+		const VoxelBlockyModel &model = library->get_voxel_const(i);
+		switch (model.get_geometry_type()) {
+			case VoxelBlockyModel::GEOMETRY_NONE:
+				break;
+			case VoxelBlockyModel::GEOMETRY_CUBE:
+				has_solid_model = true;
+				break;
+			case VoxelBlockyModel::GEOMETRY_CUSTOM_MESH:
+				has_solid_model = model.get_custom_mesh().is_valid();
+				break;
+			default:
+				ERR_PRINT("Unknown enum value");
+				break;
+		}
+	}
+	if (!has_solid_model) {
+		out_warnings.append(TTR("The " + VoxelBlockyLibrary::get_class_static() + " assigned to " +
+				VoxelMesherBlocky::get_class_static() + " only has empty " + VoxelBlockyModel::get_class_static() +
+				"s."));
+	}
+}
+
+#endif // TOOLS_ENABLED
 
 void VoxelMesherBlocky::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_library", "voxel_library"), &VoxelMesherBlocky::set_library);
@@ -544,7 +685,8 @@ void VoxelMesherBlocky::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_occlusion_darkness", "value"), &VoxelMesherBlocky::set_occlusion_darkness);
 	ClassDB::bind_method(D_METHOD("get_occlusion_darkness"), &VoxelMesherBlocky::get_occlusion_darkness);
 
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "library", PROPERTY_HINT_RESOURCE_TYPE, "VoxelLibrary",
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "library", PROPERTY_HINT_RESOURCE_TYPE,
+						 VoxelBlockyLibrary::get_class_static(),
 						 PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_EDITOR_INSTANTIATE_OBJECT),
 			"set_library", "get_library");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "occlusion_enabled"), "set_occlusion_enabled", "get_occlusion_enabled");

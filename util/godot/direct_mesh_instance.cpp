@@ -4,7 +4,18 @@
 
 namespace zylann {
 
-DirectMeshInstance::DirectMeshInstance() {}
+DirectMeshInstance::DirectMeshInstance() {
+	// Nothing here. It is a thin RID wrapper,
+	// no calls to RenderingServer are made until we called one of the functions.
+}
+
+DirectMeshInstance::DirectMeshInstance(DirectMeshInstance &&src) {
+	_mesh_instance = src._mesh_instance;
+	_mesh = src._mesh;
+
+	src._mesh_instance = RID();
+	src._mesh = Ref<Mesh>();
+}
 
 DirectMeshInstance::~DirectMeshInstance() {
 	destroy();
@@ -23,6 +34,7 @@ void DirectMeshInstance::create() {
 
 void DirectMeshInstance::destroy() {
 	if (_mesh_instance.is_valid()) {
+		ZN_PROFILE_SCOPE();
 		RenderingServer &vs = *RenderingServer::get_singleton();
 		vs.free(_mesh_instance);
 		_mesh_instance = RID();
@@ -41,7 +53,7 @@ void DirectMeshInstance::set_world(World3D *world) {
 }
 
 void DirectMeshInstance::set_transform(Transform3D world_transform) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(!_mesh_instance.is_valid());
 	RenderingServer &vs = *RenderingServer::get_singleton();
 	vs.instance_set_transform(_mesh_instance, world_transform);
@@ -82,7 +94,7 @@ void DirectMeshInstance::set_cast_shadows_setting(RenderingServer::ShadowCasting
 	vs.instance_geometry_set_cast_shadows_setting(_mesh_instance, mode);
 }
 
-void DirectMeshInstance::set_shader_instance_uniform(StringName key, Variant value) {
+void DirectMeshInstance::set_shader_instance_parameter(StringName key, Variant value) {
 	ERR_FAIL_COND(!_mesh_instance.is_valid());
 	RenderingServer &vs = *RenderingServer::get_singleton();
 	vs.instance_geometry_set_shader_parameter(_mesh_instance, key, value);
@@ -120,14 +132,18 @@ void DirectMeshInstance::set_gi_mode(GIMode mode) {
 	vs.instance_geometry_set_flag(_mesh_instance, RenderingServer::INSTANCE_FLAG_USE_DYNAMIC_GI, dynamic_gi);
 }
 
-// void DirectMeshInstance::move_to(DirectMeshInstance &dst) {
-// 	dst.destroy();
+void DirectMeshInstance::operator=(DirectMeshInstance &&src) {
+	if (_mesh_instance == src._mesh_instance) {
+		return;
+	}
 
-// 	dst._mesh_instance = _mesh_instance;
-// 	dst._mesh = _mesh;
+	destroy();
 
-// 	_mesh_instance = RID();
-// 	_mesh.unref();
-// }
+	_mesh_instance = src._mesh_instance;
+	_mesh = src._mesh;
+
+	src._mesh_instance = RID();
+	src._mesh.unref();
+}
 
 } // namespace zylann

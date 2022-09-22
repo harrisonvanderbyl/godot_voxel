@@ -1,6 +1,8 @@
 #include "voxel_tool.h"
-#include "../storage/voxel_buffer.h"
-#include "../util/macros.h"
+#include "../storage/voxel_buffer_gd.h"
+#include "../util/log.h"
+#include "../util/math/color8.h"
+#include "../util/math/conv.h"
 #include "../util/profiling.h"
 
 namespace zylann::voxel {
@@ -25,12 +27,12 @@ uint64_t VoxelTool::get_eraser_value() const {
 	return _eraser_value;
 }
 
-void VoxelTool::set_channel(int channel) {
-	ERR_FAIL_INDEX(channel, VoxelBuffer::MAX_CHANNELS);
-	_channel = channel;
+void VoxelTool::set_channel(VoxelBufferInternal::ChannelId p_channel) {
+	ERR_FAIL_INDEX(p_channel, VoxelBufferInternal::MAX_CHANNELS);
+	_channel = p_channel;
 }
 
-int VoxelTool::get_channel() const {
+VoxelBufferInternal::ChannelId VoxelTool::get_channel() const {
 	return _channel;
 }
 
@@ -71,6 +73,14 @@ void VoxelTool::set_texture_falloff(float falloff) {
 	_texture_params.sharpness = 1.f / math::clamp(falloff, 0.001f, 1.f);
 }
 
+void VoxelTool::set_sdf_strength(float strength) {
+	_sdf_strength = math::clamp(strength, 0.f, 1.f);
+}
+
+float VoxelTool::get_sdf_strength() const {
+	return _sdf_strength;
+}
+
 float VoxelTool::get_texture_falloff() const {
 	ERR_FAIL_COND_V(_texture_params.sharpness < 1.f, 1.f);
 	return 1.f / _texture_params.sharpness;
@@ -93,7 +103,7 @@ float VoxelTool::get_voxel_f(Vector3i pos) const {
 void VoxelTool::set_voxel(Vector3i pos, uint64_t v) {
 	Box3i box(pos, Vector3i(1, 1, 1));
 	if (!is_area_editable(box)) {
-		PRINT_VERBOSE("Area not editable");
+		ZN_PRINT_VERBOSE("Area not editable");
 		return;
 	}
 	_set_voxel(pos, v);
@@ -103,7 +113,7 @@ void VoxelTool::set_voxel(Vector3i pos, uint64_t v) {
 void VoxelTool::set_voxel_f(Vector3i pos, float v) {
 	Box3i box(pos, Vector3i(1, 1, 1));
 	if (!is_area_editable(box)) {
-		PRINT_VERBOSE("Area not editable");
+		ZN_PRINT_VERBOSE("Area not editable");
 		return;
 	}
 	_set_voxel_f(pos, v);
@@ -115,20 +125,12 @@ void VoxelTool::do_point(Vector3i pos) {
 	if (!is_area_editable(box)) {
 		return;
 	}
-	if (_channel == VoxelBuffer::CHANNEL_SDF) {
+	if (_channel == VoxelBufferInternal::CHANNEL_SDF) {
 		_set_voxel_f(pos, _mode == MODE_REMOVE ? 1.0 : -1.0);
 	} else {
 		_set_voxel(pos, _mode == MODE_REMOVE ? _eraser_value : _value);
 	}
 	_post_edit(box);
-}
-
-void VoxelTool::do_line(Vector3i begin, Vector3i end) {
-	ERR_PRINT("Not implemented");
-}
-
-void VoxelTool::do_circle(Vector3i pos, int radius, Vector3i direction) {
-	ERR_PRINT("Not implemented");
 }
 
 uint64_t VoxelTool::_get_voxel(Vector3i pos) const {
@@ -178,18 +180,22 @@ inline float sdf_blend(float src_value, float dst_value, VoxelTool::Mode mode) {
 }
 } // namespace
 
-void VoxelTool::do_sphere(Vector3 center, float radius) {
-	VOXEL_PROFILE_SCOPE();
+// The following are default legacy implementations. They may be slower than specialized ones, so they can often be
+// defined in subclasses of VoxelTool. Ideally, a function may be exposed on the base class only if it has an optimal
+// definition in all specialized classes.
 
-	const Box3i box(Vector3iUtil::from_floored(center) - Vector3iUtil::create(Math::floor(radius)),
+void VoxelTool::do_sphere(Vector3 center, float radius) {
+	ZN_PROFILE_SCOPE();
+
+	const Box3i box(math::floor_to_int(center) - Vector3iUtil::create(Math::floor(radius)),
 			Vector3iUtil::create(Math::ceil(radius) * 2));
 
 	if (!is_area_editable(box)) {
-		PRINT_VERBOSE("Area not editable");
+		ZN_PRINT_VERBOSE("Area not editable");
 		return;
 	}
 
-	if (_channel == VoxelBuffer::CHANNEL_SDF) {
+	if (_channel == VoxelBufferInternal::CHANNEL_SDF) {
 		box.for_each_cell([this, center, radius](Vector3i pos) {
 			float d = _sdf_scale * zylann::math::sdf_sphere(pos, center, radius);
 			_set_voxel_f(pos, sdf_blend(d, get_voxel_f(pos), _mode));
@@ -210,20 +216,21 @@ void VoxelTool::do_sphere(Vector3 center, float radius) {
 }
 
 // Erases matter in every voxel where the provided buffer has matter.
-void VoxelTool::sdf_stamp_erase(Ref<VoxelBuffer> stamp, Vector3i pos) {
-	VOXEL_PROFILE_SCOPE();
-	ERR_FAIL_COND_MSG(get_channel() != VoxelBuffer::CHANNEL_SDF, "This function only works when channel is set to SDF");
+void VoxelTool::sdf_stamp_erase(Ref<gd::VoxelBuffer> stamp, Vector3i pos) {
+	ZN_PROFILE_SCOPE();
+	ERR_FAIL_COND_MSG(
+			get_channel() != VoxelBufferInternal::CHANNEL_SDF, "This function only works when channel is set to SDF");
 
 	const Box3i box(pos, stamp->get_buffer().get_size());
 	if (!is_area_editable(box)) {
-		PRINT_VERBOSE("Area not editable");
+		ZN_PRINT_VERBOSE("Area not editable");
 		return;
 	}
 
 	box.for_each_cell_zxy([this, stamp, pos](Vector3i pos_in_volume) {
 		const Vector3i pos_in_stamp = pos_in_volume - pos;
 		const float dst_sdf =
-				stamp->get_voxel_f(pos_in_stamp.x, pos_in_stamp.y, pos_in_stamp.z, VoxelBuffer::CHANNEL_SDF);
+				stamp->get_voxel_f(pos_in_stamp.x, pos_in_stamp.y, pos_in_stamp.z, VoxelBufferInternal::CHANNEL_SDF);
 		if (dst_sdf <= 0.f) {
 			_set_voxel_f(pos_in_volume, 1.f);
 		}
@@ -233,16 +240,16 @@ void VoxelTool::sdf_stamp_erase(Ref<VoxelBuffer> stamp, Vector3i pos) {
 }
 
 void VoxelTool::do_box(Vector3i begin, Vector3i end) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 	Vector3iUtil::sort_min_max(begin, end);
 	Box3i box = Box3i::from_min_max(begin, end + Vector3i(1, 1, 1));
 
 	if (!is_area_editable(box)) {
-		PRINT_VERBOSE("Area not editable");
+		ZN_PRINT_VERBOSE("Area not editable");
 		return;
 	}
 
-	if (_channel == VoxelBuffer::CHANNEL_SDF) {
+	if (_channel == VoxelBufferInternal::CHANNEL_SDF) {
 		// TODO Better quality
 		box.for_each_cell([this](Vector3i pos) { _set_voxel_f(pos, sdf_blend(-1.0, get_voxel_f(pos), _mode)); });
 
@@ -254,13 +261,13 @@ void VoxelTool::do_box(Vector3i begin, Vector3i end) {
 	_post_edit(box);
 }
 
-void VoxelTool::copy(Vector3i pos, Ref<VoxelBuffer> dst, uint8_t channel_mask) const {
+void VoxelTool::copy(Vector3i pos, Ref<gd::VoxelBuffer> dst, uint8_t channel_mask) const {
 	ERR_FAIL_COND(dst.is_null());
 	ERR_PRINT("Not implemented");
 }
 
 void VoxelTool::paste(
-		Vector3i p_pos, Ref<VoxelBuffer> p_voxels, uint8_t channels_mask, bool use_mask, uint64_t mask_value) {
+		Vector3i p_pos, Ref<gd::VoxelBuffer> p_voxels, uint8_t channels_mask, bool use_mask, uint64_t mask_value) {
 	ERR_FAIL_COND(p_voxels.is_null());
 	ERR_PRINT("Not implemented");
 }
@@ -283,12 +290,77 @@ Variant VoxelTool::get_voxel_metadata(Vector3i pos) const {
 	return Variant();
 }
 
+uint64_t VoxelTool::_b_get_voxel(Vector3i pos) {
+	return get_voxel(pos);
+}
+
+float VoxelTool::_b_get_voxel_f(Vector3i pos) {
+	return get_voxel_f(pos);
+}
+
+void VoxelTool::_b_set_voxel(Vector3i pos, uint64_t v) {
+	set_voxel(pos, v);
+}
+
+void VoxelTool::_b_set_voxel_f(Vector3i pos, float v) {
+	set_voxel_f(pos, v);
+}
+
+Ref<VoxelRaycastResult> VoxelTool::_b_raycast(Vector3 pos, Vector3 dir, float max_distance, uint32_t collision_mask) {
+	return raycast(pos, dir, max_distance, collision_mask);
+}
+
+void VoxelTool::_b_do_point(Vector3i pos) {
+	do_point(pos);
+}
+
+void VoxelTool::_b_do_sphere(Vector3 pos, float radius) {
+	do_sphere(pos, radius);
+}
+
+void VoxelTool::_b_do_box(Vector3i begin, Vector3i end) {
+	do_box(begin, end);
+}
+
+void VoxelTool::_b_copy(Vector3i pos, Ref<gd::VoxelBuffer> voxels, int channel_mask) {
+	copy(pos, voxels, channel_mask);
+}
+
+void VoxelTool::_b_paste(Vector3i pos, Ref<gd::VoxelBuffer> voxels, int channels_mask, int64_t mask_value) {
+	// TODO May need two functions, one masked, one not masked, or add a parameter, but it breaks compat
+	paste(pos, voxels, channels_mask, mask_value > 0xffffffff, mask_value);
+}
+
+Variant VoxelTool::_b_get_voxel_metadata(Vector3i pos) const {
+	return get_voxel_metadata(pos);
+}
+
+void VoxelTool::_b_set_voxel_metadata(Vector3i pos, Variant meta) {
+	return set_voxel_metadata(pos, meta);
+}
+
+bool VoxelTool::_b_is_area_editable(AABB box) const {
+	return is_area_editable(Box3i(math::floor_to_int(box.position), math::floor_to_int(box.size)));
+}
+
+static int _b_color_to_u16(Color col) {
+	return Color8(col).to_u16();
+}
+
+void VoxelTool::_b_set_channel(gd::VoxelBuffer::ChannelId p_channel) {
+	set_channel(VoxelBufferInternal::ChannelId(p_channel));
+}
+
+gd::VoxelBuffer::ChannelId VoxelTool::_b_get_channel() const {
+	return gd::VoxelBuffer::ChannelId(get_channel());
+}
+
 void VoxelTool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_value", "v"), &VoxelTool::set_value);
 	ClassDB::bind_method(D_METHOD("get_value"), &VoxelTool::get_value);
 
-	ClassDB::bind_method(D_METHOD("set_channel", "v"), &VoxelTool::set_channel);
-	ClassDB::bind_method(D_METHOD("get_channel"), &VoxelTool::get_channel);
+	ClassDB::bind_method(D_METHOD("set_channel", "v"), &VoxelTool::_b_set_channel);
+	ClassDB::bind_method(D_METHOD("get_channel"), &VoxelTool::_b_get_channel);
 
 	ClassDB::bind_method(D_METHOD("set_mode", "m"), &VoxelTool::set_mode);
 	ClassDB::bind_method(D_METHOD("get_mode"), &VoxelTool::get_mode);
@@ -298,6 +370,9 @@ void VoxelTool::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_sdf_scale", "scale"), &VoxelTool::set_sdf_scale);
 	ClassDB::bind_method(D_METHOD("get_sdf_scale"), &VoxelTool::get_sdf_scale);
+
+	ClassDB::bind_method(D_METHOD("set_sdf_strength", "strength"), &VoxelTool::set_sdf_strength);
+	ClassDB::bind_method(D_METHOD("get_sdf_strength"), &VoxelTool::get_sdf_strength);
 
 	ClassDB::bind_method(D_METHOD("set_texture_index", "index"), &VoxelTool::set_texture_index);
 	ClassDB::bind_method(D_METHOD("get_texture_index"), &VoxelTool::get_texture_index);
@@ -328,12 +403,15 @@ void VoxelTool::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("is_area_editable", "box"), &VoxelTool::_b_is_area_editable);
 
+	ClassDB::bind_static_method(VoxelTool::get_class_static(), D_METHOD("color_to_u16", "color"), &_b_color_to_u16);
+
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "value"), "set_value", "get_value");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "channel", PROPERTY_HINT_ENUM, VoxelBuffer::CHANNEL_ID_HINT_STRING),
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "channel", PROPERTY_HINT_ENUM, gd::VoxelBuffer::CHANNEL_ID_HINT_STRING),
 			"set_channel", "get_channel");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "eraser_value"), "set_eraser_value", "get_eraser_value");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "mode", PROPERTY_HINT_ENUM, "Add,Remove,Set"), "set_mode", "get_mode");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "sdf_scale"), "set_sdf_scale", "get_sdf_scale");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sdf_scale"), "set_sdf_scale", "get_sdf_scale");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sdf_strength"), "set_sdf_strength", "get_sdf_strength");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "texture_index"), "set_texture_index", "get_texture_index");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "texture_opacity"), "set_texture_opacity", "get_texture_opacity");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "texture_falloff"), "set_texture_falloff", "get_texture_falloff");

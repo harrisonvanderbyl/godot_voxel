@@ -3,11 +3,11 @@
 
 #include "../../storage/voxel_buffer_internal.h"
 #include "../../util/fixed_array.h"
+#include "../../util/math/vector2f.h"
+#include "../../util/math/vector3f.h"
 #include "../../util/math/vector3i.h"
 
 #include <core/math/color.h>
-#include <core/math/vector2.h>
-#include <core/math/vector3.h>
 #include <vector>
 
 namespace zylann::voxel::transvoxel {
@@ -20,6 +20,8 @@ static const int MAX_PADDING = 2;
 static const unsigned int MAX_TEXTURES = 16;
 // How many textures can blend at once
 static const unsigned int MAX_TEXTURE_BLENDS = 4;
+// Transvoxel guarantees a maximum number of triangle generated for each 2x2x2 cell of voxels.
+static const unsigned int MAX_TRIANGLES_PER_CELL = 5;
 
 enum TexturingMode {
 	TEXTURES_NONE,
@@ -29,11 +31,41 @@ enum TexturingMode {
 	TEXTURES_BLEND_4_OVER_16
 };
 
+struct LodAttrib {
+	Vector3f secondary_position;
+	// Mask telling if a cell the vertex belongs to is on a side of the block.
+	// Each bit corresponds to a side.
+	// 0: -X
+	// 1: +X
+	// 2: -Y
+	// 3: +Y
+	// 4: -Z
+	// 5: +Z
+	uint8_t cell_border_mask;
+	// Mask telling if the vertex is on a side of the block. Same convention as above.
+	uint8_t vertex_border_mask;
+	// Flag telling if the vertex belongs to a transition mesh.
+	uint8_t transition;
+	// Unused. Necessary to align to 4*sizeof(float) so it can be memcpied to a rendering buffer.
+	uint8_t _pad;
+};
+
+// struct TextureAttrib {
+// 	uint8_t index0;
+// 	uint8_t index1;
+// 	uint8_t index2;
+// 	uint8_t index3;
+// 	uint8_t weight0;
+// 	uint8_t weight1;
+// 	uint8_t weight2;
+// 	uint8_t weight3;
+// };
+
 struct MeshArrays {
-	std::vector<Vector3> vertices;
-	std::vector<Vector3> normals;
-	std::vector<Color> lod_data;
-	std::vector<Vector2> texturing_data;
+	std::vector<Vector3f> vertices;
+	std::vector<Vector3f> normals;
+	std::vector<LodAttrib> lod_data;
+	std::vector<Vector2f> texturing_data; // TextureAttrib
 	std::vector<int> indices;
 
 	void clear() {
@@ -44,11 +76,12 @@ struct MeshArrays {
 		indices.clear();
 	}
 
-	int add_vertex(Vector3 primary, Vector3 normal, uint16_t border_mask, Vector3 secondary) {
+	int add_vertex(Vector3f primary, Vector3f normal, uint8_t cell_border_mask, uint8_t vertex_border_mask,
+			uint8_t transition, Vector3f secondary) {
 		int vi = vertices.size();
 		vertices.push_back(primary);
 		normals.push_back(normal);
-		lod_data.push_back(Color(secondary.x, secondary.y, secondary.z, border_mask));
+		lod_data.push_back({ secondary, cell_border_mask, vertex_border_mask, transition });
 		return vi;
 	}
 };
@@ -67,12 +100,12 @@ class Cache {
 public:
 	void reset_reuse_cells(Vector3i p_block_size) {
 		_block_size = p_block_size;
-		unsigned int deck_area = _block_size.x * _block_size.y;
+		const unsigned int deck_area = _block_size.x * _block_size.y;
 		for (unsigned int i = 0; i < _cache.size(); ++i) {
 			std::vector<ReuseCell> &deck = _cache[i];
 			deck.resize(deck_area);
 			for (size_t j = 0; j < deck.size(); ++j) {
-				deck[j].vertices.fill(-1);
+				fill(deck[j].vertices, -1);
 			}
 		}
 	}
@@ -82,7 +115,7 @@ public:
 			std::vector<ReuseTransitionCell> &row = _cache_2d[i];
 			row.resize(p_block_size.x);
 			for (size_t j = 0; j < row.size(); ++j) {
-				row[j].vertices.fill(-1);
+				fill(row[j].vertices, -1);
 			}
 		}
 	}
@@ -90,14 +123,14 @@ public:
 	ReuseCell &get_reuse_cell(Vector3i pos) {
 		unsigned int j = pos.z & 1;
 		unsigned int i = pos.y * _block_size.x + pos.x;
-		CRASH_COND(i >= _cache[j].size());
+		ZN_ASSERT(i < _cache[j].size());
 		return _cache[j][i];
 	}
 
 	ReuseTransitionCell &get_reuse_cell_2d(int x, int y) {
 		unsigned int j = y & 1;
 		unsigned int i = x;
-		CRASH_COND(i >= _cache_2d[j].size());
+		ZN_ASSERT(i < _cache_2d[j].size());
 		return _cache_2d[j][i];
 	}
 
@@ -114,11 +147,22 @@ struct DefaultTextureIndicesData {
 	bool use;
 };
 
-DefaultTextureIndicesData build_regular_mesh(const VoxelBufferInternal &voxels, unsigned int sdf_channel, int lod_index,
-		TexturingMode texturing_mode, Cache &cache, MeshArrays &output);
+class IDeepSDFSampler {
+public:
+	virtual float get_single(const Vector3i position_in_voxels, uint32_t lod_index) const = 0;
+};
 
-void build_transition_mesh(const VoxelBufferInternal &voxels, unsigned int sdf_channel, int direction, int lod_index,
-		TexturingMode texturing_mode, Cache &cache, MeshArrays &output,
+struct CellInfo {
+	Vector3i position;
+	uint32_t triangle_count;
+};
+
+DefaultTextureIndicesData build_regular_mesh(const VoxelBufferInternal &voxels, unsigned int sdf_channel,
+		uint32_t lod_index, TexturingMode texturing_mode, Cache &cache, MeshArrays &output,
+		const IDeepSDFSampler *deep_sdf_sampler, std::vector<CellInfo> *cell_infos);
+
+void build_transition_mesh(const VoxelBufferInternal &voxels, unsigned int sdf_channel, int direction,
+		uint32_t lod_index, TexturingMode texturing_mode, Cache &cache, MeshArrays &output,
 		DefaultTextureIndicesData default_texture_indices_data);
 
 } //namespace zylann::voxel::transvoxel

@@ -156,6 +156,7 @@ public:
 	bool is_valid() const;
 
 	// Queries
+	// TODO Double-precision support. FastNoise2 doesn't have it yet, so it's all `float` for now.
 
 	float get_noise_2d_single(Vector2 pos) const;
 	float get_noise_3d_single(Vector3 pos) const;
@@ -174,8 +175,9 @@ public:
 	math::Interval get_estimated_output_range() const;
 
 private:
-	// Non-static method for scripts because Godot4 does not support binding static methods (it's only implemented for
-	// primitive types)
+	// Non-static method for scripts because Godot4 does not support binding static methods (it's only
+	// implemented for primitive types)
+	// TODO Make it static, it is supported now
 	String _b_get_simd_level_name(SIMDLevel level);
 
 	static void _bind_methods();

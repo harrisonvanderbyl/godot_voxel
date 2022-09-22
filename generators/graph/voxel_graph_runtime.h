@@ -2,6 +2,7 @@
 #define VOXEL_GRAPH_RUNTIME_H
 
 #include "../../util/math/interval.h"
+#include "../../util/math/vector3f.h"
 #include "../../util/math/vector3i.h"
 #include "../../util/span.h"
 #include "program_graph.h"
@@ -9,6 +10,8 @@
 #include <core/object/ref_counted.h>
 
 namespace zylann::voxel {
+
+class VoxelGraphNodeDB;
 
 // CPU VM to execute a voxel graph generator.
 // This is a more generic class implementing the core of a 3D expression processing system.
@@ -20,7 +23,16 @@ public:
 	struct CompilationResult {
 		bool success = false;
 		int node_id = -1;
+		int expanded_nodes_count = 0; // For testing and debugging
 		String message;
+
+		static CompilationResult make_error(const char *p_message, int p_node_id = -1) {
+			VoxelGraphRuntime::CompilationResult res;
+			res.success = false;
+			res.node_id = p_node_id;
+			res.message = p_message;
+			return res;
+		}
 	};
 
 	// Contains values of a node output
@@ -48,15 +60,17 @@ public:
 	// If no local optimization is done, this can remain the same for any position lists.
 	// If local optimization is used, it may be recomputed before each query.
 	struct ExecutionMap {
-		// TODO Typo?
-		std::vector<uint16_t> operation_adresses;
-		// Stores node IDs referring to the user-facing graph
-		std::vector<int> debug_nodes;
+		std::vector<uint16_t> operation_addresses;
+		// Stores node IDs referring to the user-facing graph.
+		// Each index corresponds to operation indices.
+		// The same node can appear twice, because sometimes a user-facing node compiles as multiple nodes.
+		// It can also include some nodes not explicitely present in the user graph (like auto-inputs).
+		std::vector<uint32_t> debug_nodes;
 		// From which index in the adress list operations will start depending on Y
 		unsigned int xzy_start_index = 0;
 
 		void clear() {
-			operation_adresses.clear();
+			operation_addresses.clear();
 			debug_nodes.clear();
 			xzy_start_index = 0;
 		}
@@ -93,6 +107,21 @@ public:
 			}
 			buffers.clear();
 			ranges.clear();
+			debug_profiler_times.clear();
+		}
+
+		inline void add_execution_time(uint32_t execution_map_index, uint32_t time) {
+#if DEBUG_ENABLED
+			CRASH_COND(execution_map_index >= debug_profiler_times.size());
+#endif
+			debug_profiler_times[execution_map_index] += time;
+		}
+
+		inline uint32_t get_execution_time(uint32_t execution_map_index) const {
+#if DEBUG_ENABLED
+			CRASH_COND(execution_map_index >= debug_profiler_times.size());
+#endif
+			return debug_profiler_times[execution_map_index];
 		}
 
 	private:
@@ -100,6 +129,8 @@ public:
 
 		std::vector<math::Interval> ranges;
 		std::vector<Buffer> buffers;
+		// [execution_map_index] => microseconds
+		std::vector<uint32_t> debug_profiler_times;
 
 		unsigned int buffer_size = 0;
 		unsigned int buffer_capacity = 0;
@@ -116,18 +147,21 @@ public:
 	~VoxelGraphRuntime();
 
 	void clear();
-	CompilationResult compile(const ProgramGraph &graph, bool debug);
+	CompilationResult compile(const ProgramGraph &p_graph, bool debug);
 
 	// Call this before you use a state with generation functions.
 	// You need to call it once, until you want to use a different graph, buffer size or buffer count.
 	// If none of these change, you can keep re-using it.
-	void prepare_state(State &state, unsigned int buffer_size) const;
+	void prepare_state(State &state, unsigned int buffer_size, bool with_profiling) const;
 
 	// Convenience for set generation with only one value
-	void generate_single(State &state, Vector3 position, const ExecutionMap *execution_map) const;
+	// TODO Evaluate needs for double-precision in VoxelGraphRuntime
+	void generate_single(State &state, Vector3f position_f, const ExecutionMap *execution_map) const;
 
-	void generate_set(State &state, Span<float> in_x, Span<float> in_y, Span<float> in_z, bool skip_xz,
-			const ExecutionMap *execution_map) const;
+	void generate_set(State &state, Span<float> in_x, Span<float> in_y, Span<float> in_z, Span<float> in_sdf,
+			bool skip_xz, const ExecutionMap *execution_map) const;
+
+	bool has_input(unsigned int node_type) const;
 
 	inline unsigned int get_output_count() const {
 		return _program.outputs_count;
@@ -140,7 +174,7 @@ public:
 	// Analyzes a specific region of inputs to find out what ranges of outputs we can expect.
 	// It can be used to speed up calls to `generate_set` thanks to execution mapping,
 	// so that operations can be optimized out if they don't contribute to the result.
-	void analyze_range(State &state, Vector3i min_pos, Vector3i max_pos) const;
+	void analyze_range(State &state, Vector3i min_pos, Vector3i max_pos, math::Interval sdf_input_range) const;
 
 	// Call this after `analyze_range` if you intend to actually generate a set or single values in the area.
 	// This allows to use the execution map optimization, until you choose another area.
@@ -151,98 +185,16 @@ public:
 	// Convenience function to require all outputs
 	void generate_optimized_execution_map(const State &state, ExecutionMap &execution_map, bool debug) const;
 
+	const ExecutionMap &get_default_execution_map() const;
+
 	// Gets the buffer address of a specific output port
 	bool try_get_output_port_address(ProgramGraph::PortLocation port, uint16_t &out_address) const;
+
+	uint64_t get_program_hash() const;
 
 	struct HeapResource {
 		void *ptr;
 		void (*deleter)(void *p);
-	};
-
-	// Functions usable by node implementations during the compilation stage
-	class CompileContext {
-	public:
-		CompileContext(const ProgramGraph::Node &node, std::vector<uint16_t> &program,
-				std::vector<HeapResource> &heap_resources, std::vector<Variant> &params) :
-				_node(node), _program(program), _heap_resources(heap_resources), _params(params) {}
-
-		Variant get_param(size_t i) const {
-			CRASH_COND(i > _params.size());
-			return _params[i];
-		}
-
-		// Typical use is to pass a struct containing all compile-time arguments the operation will need
-		template <typename T>
-		void set_params(T params) {
-			// Can be called only once per node
-			CRASH_COND(_params_added);
-			// We will need to align memory, so the struct will not be immediately stored here.
-			// Instead we put a header that tells how much to advance in order to reach the beginning of the struct,
-			// which will be at an aligned position.
-			// We align to the maximum alignment between the struct,
-			// and the type of word we store inside the program buffer, which is uint16.
-			const size_t params_alignment = math::max(alignof(T), alignof(uint16_t));
-			const size_t params_offset_index = _program.size();
-			// Prepare space to store the offset (at least 1 since that header is one word)
-			_program.push_back(1);
-			// Align memory for the struct.
-			// Note, we index with words, not bytes.
-			const size_t struct_offset =
-					math::alignup(_program.size() * sizeof(uint16_t), params_alignment) / sizeof(uint16_t);
-			if (struct_offset > _program.size()) {
-				_program.resize(struct_offset);
-			}
-			// Write offset in header
-			_program[params_offset_index] = struct_offset - params_offset_index;
-			// Allocate space for the struct. It is measured in words, so it can be up to 1 byte larger.
-			_params_size_in_words = (sizeof(T) + sizeof(uint16_t) - 1) / sizeof(uint16_t);
-			_program.resize(_program.size() + _params_size_in_words);
-			// Write struct
-			T &p = *reinterpret_cast<T *>(&_program[struct_offset]);
-			p = params;
-
-			_params_added = true;
-		}
-
-		// In case the compilation step produces a resource to be deleted
-		template <typename T>
-		void add_memdelete_cleanup(T *ptr) {
-			HeapResource hr;
-			hr.ptr = ptr;
-			hr.deleter = [](void *p) {
-				// TODO We have no guarantee it was allocated with memnew :|
-				T *tp = reinterpret_cast<T *>(p);
-				memdelete(tp);
-			};
-			_heap_resources.push_back(hr);
-		}
-
-		void make_error(String message) {
-			_error_message = message;
-			_has_error = true;
-		}
-
-		bool has_error() const {
-			return _has_error;
-		}
-
-		const String &get_error_message() const {
-			return _error_message;
-		}
-
-		size_t get_params_size_in_words() const {
-			return _params_size_in_words;
-		}
-
-	private:
-		const ProgramGraph::Node &_node;
-		std::vector<uint16_t> &_program;
-		std::vector<HeapResource> &_heap_resources;
-		std::vector<Variant> &_params;
-		String _error_message;
-		size_t _params_size_in_words = 0;
-		bool _has_error = false;
-		bool _params_added = false;
 	};
 
 	class _ProcessContext {
@@ -343,12 +295,11 @@ public:
 		Span<Buffer> _buffers;
 	};
 
-	typedef void (*CompileFunc)(CompileContext &);
 	typedef void (*ProcessBufferFunc)(ProcessBufferContext &);
 	typedef void (*RangeAnalysisFunc)(RangeAnalysisContext &);
 
 private:
-	CompilationResult _compile(const ProgramGraph &graph, bool debug);
+	CompilationResult _compile(const ProgramGraph &graph, bool debug, const VoxelGraphNodeDB &type_db);
 
 	bool is_operation_constant(const State &state, uint16_t op_address) const;
 
@@ -365,13 +316,15 @@ private:
 		bool is_binding;
 	};
 
+	// Pre-processed, read-only graph used for runtime optimizations.
 	struct DependencyGraph {
 		struct Node {
 			uint16_t first_dependency;
 			uint16_t end_dependency;
 			uint16_t op_address;
 			bool is_input;
-			int debug_node_id;
+			// Node ID from the expanded ProgramGraph (non user-provided, so may need remap)
+			uint32_t debug_node_id;
 		};
 
 		// Indexes to the `nodes` array
@@ -439,6 +392,8 @@ private:
 		int y_input_address = -1;
 		// Address within the State's array of buffers where the Z input may be.
 		int z_input_address = -1;
+		// Address within the State's array of buffers where the SDF input may be.
+		int sdf_input_address = -1;
 
 		FixedArray<OutputInfo, MAX_OUTPUTS> outputs;
 		unsigned int outputs_count = 0;
@@ -447,9 +402,16 @@ private:
 		// Buffers are needed to hold values of arguments and outputs for each operation.
 		unsigned int buffer_count = 0;
 
-		// Associates a high-level port to its corresponding address within the compiled program.
+		// Associates a port from the input graph to its corresponding address within the compiled program.
 		// This is used for debugging intermediate values.
-		HashMap<ProgramGraph::PortLocation, uint16_t, ProgramGraph::PortLocationHasher> output_port_addresses;
+		std::unordered_map<ProgramGraph::PortLocation, uint16_t> output_port_addresses;
+
+		// If you have a port location from the original user graph, before querying `output_port_addresses`, remap
+		// it first, in case it got expanded to different nodes during compilation.
+		std::unordered_map<ProgramGraph::PortLocation, ProgramGraph::PortLocation> user_port_to_expanded_port;
+
+		// Associates expanded graph ID to user graph node IDs.
+		std::unordered_map<uint32_t, uint32_t> expanded_node_id_to_user_node_id;
 
 		// Result of the last compilation attempt. The program should not be run if it failed.
 		CompilationResult compilation_result;
@@ -460,10 +422,13 @@ private:
 			xzy_start_op_address = 0;
 			default_execution_map.clear();
 			output_port_addresses.clear();
+			user_port_to_expanded_port.clear();
+			expanded_node_id_to_user_node_id.clear();
 			dependency_graph.clear();
 			x_input_address = -1;
 			y_input_address = -1;
 			z_input_address = -1;
+			sdf_input_address = -1;
 			outputs_count = 0;
 			compilation_result = CompilationResult();
 			for (auto it = heap_resources.begin(); it != heap_resources.end(); ++it) {

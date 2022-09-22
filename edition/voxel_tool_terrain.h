@@ -7,7 +7,7 @@ namespace zylann::voxel {
 
 class VoxelTerrain;
 class VoxelBlockyLibrary;
-class VoxelDataMap;
+class VoxelData;
 
 class VoxelToolTerrain : public VoxelTool {
 	GDCLASS(VoxelToolTerrain, VoxelTool)
@@ -22,20 +22,22 @@ public:
 	void set_voxel_metadata(Vector3i pos, Variant meta) override;
 	Variant get_voxel_metadata(Vector3i pos) const override;
 
-	void copy(Vector3i pos, Ref<VoxelBuffer> dst, uint8_t channels_mask) const override;
-	void paste(Vector3i pos, Ref<VoxelBuffer> p_voxels, uint8_t channels_mask, bool use_mask,
+	void copy(Vector3i pos, Ref<gd::VoxelBuffer> dst, uint8_t channels_mask) const override;
+	void paste(Vector3i pos, Ref<gd::VoxelBuffer> p_voxels, uint8_t channels_mask, bool use_mask,
 			uint64_t mask_value) override;
 
 	void do_sphere(Vector3 center, float radius) override;
 
 	// Specialized API
 
+	void do_hemisphere(Vector3 center, float radius, Vector3 flat_direction, float smoothness);
+
 	void run_blocky_random_tick(
 			AABB voxel_area, int voxel_count, const Callable &callback, int block_batch_count) const;
 
 	// For easier unit testing (the regular one needs a terrain setup etc, harder to test atm)
 	// The `_static` suffix is because it otherwise conflicts with the non-static method when registering the class
-	static void run_blocky_random_tick_static(VoxelDataMap &map, Box3i voxel_box, const VoxelBlockyLibrary &lib,
+	static void run_blocky_random_tick_static(VoxelData &data, Box3i voxel_box, const VoxelBlockyLibrary &lib,
 			int voxel_count, int batch_count, void *callback_data, bool (*callback)(void *, Vector3i, int64_t));
 
 	void for_each_voxel_metadata_in_area(AABB voxel_area, const Callable &callback);

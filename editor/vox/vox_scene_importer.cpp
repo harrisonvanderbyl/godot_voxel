@@ -1,8 +1,8 @@
 #include "vox_scene_importer.h"
 #include "../../constants/voxel_string_names.h"
 #include "../../meshers/cubes/voxel_mesher_cubes.h"
-#include "../../storage/voxel_buffer.h"
-#include "../../streams/vox_data.h"
+#include "../../storage/voxel_buffer_gd.h"
+#include "../../streams/vox/vox_data.h"
 #include "../../util/godot/funcs.h"
 #include "../../util/profiling.h"
 #include "vox_import_funcs.h"
@@ -54,14 +54,14 @@ float VoxelVoxSceneImporter::get_priority() const {
 
 void VoxelVoxSceneImporter::get_import_options(
 		const String &p_path, List<ImportOption> *r_options, int p_preset) const {
-	VoxelStringNames *sn = VoxelStringNames::get_singleton();
-	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn->store_colors_in_texture), false));
-	r_options->push_back(ImportOption(PropertyInfo(Variant::FLOAT, sn->scale), 1.f));
-	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn->enable_baked_lighting), true));
+	const VoxelStringNames &sn = VoxelStringNames::get_singleton();
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn.store_colors_in_texture), false));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::FLOAT, sn.scale), 1.f));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn.enable_baked_lighting), true));
 }
 
 bool VoxelVoxSceneImporter::get_option_visibility(
-		const String &p_path, const String &p_option, const Map<StringName, Variant> &p_options) const {
+		const String &p_path, const String &p_option, const HashMap<StringName, Variant> &p_options) const {
 	return true;
 }
 
@@ -84,7 +84,7 @@ struct VoxMesh {
 };
 
 static Error process_scene_node_recursively(const Data &data, int node_id, Node3D *parent_node, Node3D *&out_root_node,
-		int depth, const Vector<VoxMesh> &meshes, float scale, bool p_enable_baked_lighting) {
+		int depth, const std::vector<VoxMesh> &meshes, float scale, bool p_enable_baked_lighting) {
 	//
 	ERR_FAIL_COND_V(depth > 10, ERR_INVALID_DATA);
 	const Node *vox_node = data.get_node(node_id);
@@ -237,19 +237,19 @@ static Error process_scene_node_recursively(const Data &data, int node_id, Node3
 // }
 
 Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p_save_path,
-		const Map<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files,
+		const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files,
 		Variant *r_metadata) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
-	const bool p_store_colors_in_textures = p_options[VoxelStringNames::get_singleton()->store_colors_in_texture];
-	const float p_scale = p_options[VoxelStringNames::get_singleton()->scale];
-	const bool p_enable_baked_lighting = p_options[VoxelStringNames::get_singleton()->enable_baked_lighting];
+	const bool p_store_colors_in_textures = p_options[VoxelStringNames::get_singleton().store_colors_in_texture];
+	const float p_scale = p_options[VoxelStringNames::get_singleton().scale];
+	const bool p_enable_baked_lighting = p_options[VoxelStringNames::get_singleton().enable_baked_lighting];
 
 	magica::Data data;
 	const Error load_err = data.load_from_file(p_source_file);
 	ERR_FAIL_COND_V(load_err != OK, load_err);
 
-	Vector<VoxMesh> meshes;
+	std::vector<VoxMesh> meshes;
 	meshes.resize(data.get_model_count());
 
 	// Get color palette
@@ -285,10 +285,10 @@ Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p
 
 		VoxelBufferInternal voxels;
 		voxels.create(model.size + Vector3iUtil::create(VoxelMesherCubes::PADDING * 2));
-		voxels.decompress_channel(VoxelBuffer::CHANNEL_COLOR);
+		voxels.decompress_channel(VoxelBufferInternal::CHANNEL_COLOR);
 
 		Span<uint8_t> dst_color_indices;
-		ERR_FAIL_COND_V(!voxels.get_channel_raw(VoxelBuffer::CHANNEL_COLOR, dst_color_indices), ERR_BUG);
+		ERR_FAIL_COND_V(!voxels.get_channel_raw(VoxelBufferInternal::CHANNEL_COLOR, dst_color_indices), ERR_BUG);
 		Span<const uint8_t> src_color_indices = to_span_const(model.color_indexes);
 		copy_3d_region_zxy(dst_color_indices, voxels.get_size(), Vector3iUtil::create(VoxelMesherCubes::PADDING),
 				src_color_indices, model.size, Vector3i(), model.size);
@@ -329,9 +329,7 @@ Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p
 					//Ref<Texture> texture = ResourceLoader::load(atlas_path);
 					// TODO THIS IS A WORKAROUND, it is not supposed to be an ImageTexture...
 					// See earlier code, I could not find any way to reference a separate StreamTexture.
-					Ref<ImageTexture> texture;
-					texture.instantiate();
-					texture->create_from_image(atlas);
+					Ref<ImageTexture> texture = ImageTexture::create_from_image(atlas);
 					material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, texture);
 					material->set_texture_filter(StandardMaterial3D::TEXTURE_FILTER_NEAREST);
 				}
@@ -351,7 +349,7 @@ Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p
 		// TODO I don't know if this is correct, but I could not find a reference saying how that pivot should be
 		// calculated
 		mesh_info.pivot = (voxels.get_size() / 2 - Vector3iUtil::create(1));
-		meshes.write[model_index] = mesh_info;
+		meshes[model_index] = mesh_info;
 	}
 
 	Node3D *root_node = nullptr;
@@ -369,13 +367,13 @@ Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p
 	}
 
 	// Save meshes
-	for (int model_index = 0; model_index < meshes.size(); ++model_index) {
-		VOXEL_PROFILE_SCOPE();
+	for (unsigned int model_index = 0; model_index < meshes.size(); ++model_index) {
+		ZN_PROFILE_SCOPE();
 		Ref<Mesh> mesh = meshes[model_index].mesh;
 		String res_save_path = String("{0}.model{1}.mesh").format(varray(p_save_path, model_index));
 		// `FLAG_CHANGE_PATH` did not do what I thought it did.
 		mesh->set_path(res_save_path);
-		const Error mesh_save_err = ResourceSaver::save(res_save_path, mesh);
+		const Error mesh_save_err = ResourceSaver::save(mesh, res_save_path);
 		ERR_FAIL_COND_V_MSG(
 				mesh_save_err != OK, mesh_save_err, String("Failed to save {0}").format(varray(res_save_path)));
 	}
@@ -384,12 +382,12 @@ Error VoxelVoxSceneImporter::import(const String &p_source_file, const String &p
 
 	// Save scene
 	{
-		VOXEL_PROFILE_SCOPE();
+		ZN_PROFILE_SCOPE();
 		Ref<PackedScene> scene;
 		scene.instantiate();
 		scene->pack(root_node);
 		String scene_save_path = p_save_path + ".tscn";
-		const Error save_err = ResourceSaver::save(scene_save_path, scene);
+		const Error save_err = ResourceSaver::save(scene, scene_save_path);
 		memdelete(root_node);
 		ERR_FAIL_COND_V_MSG(save_err != OK, save_err, "Cannot save scene to file '" + scene_save_path);
 	}

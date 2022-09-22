@@ -1,18 +1,42 @@
 #include "../util/math/vector3i.h"
-#include "../util/profiling.h"
+//#include "../util/profiling.h"
+#include "errors.h"
 #include <core/math/vector3.h>
 
 namespace zylann {
 
-template <typename Predicate_F> // f(Vector3i position) -> bool
-bool voxel_raycast(Vector3 ray_origin, Vector3 ray_direction, Predicate_F predicate, real_t max_distance,
+// Values known when crossing one cell.
+// View of the cell where the ray goes from A to B:
+//
+//    |       /|
+//  --o------A-o--
+//    |prev /  |
+//    |    /   |
+//    |   /    |
+//  --o--B-----o--
+//    |current |
+//
+struct VoxelRaycastState {
+	// Grid position of the cell we are coming from.
+	Vector3i hit_prev_position;
+	// Distance along the ray where we entered the previous cell
+	float prev_distance;
+	// Grid position of the cell we just hit
+	Vector3i hit_position;
+	// Distance along the ray where we enter the hit cell
+	float distance;
+};
+
+// Runs the DDA algorithms in 3D.
+template <typename Vec3f_T, typename Predicate_F> // f(VoxelRaycastState) -> bool
+bool voxel_raycast(Vec3f_T ray_origin, Vec3f_T ray_direction, Predicate_F predicate, real_t max_distance,
 		Vector3i &out_hit_pos, Vector3i &out_prev_pos, float &out_distance_along_ray,
 		float &out_distance_along_ray_prev) {
-	VOXEL_PROFILE_SCOPE();
+	//ZN_PROFILE_SCOPE();
 
-	ERR_FAIL_COND_V(math::has_nan(ray_origin), false);
-	ERR_FAIL_COND_V(math::has_nan(ray_direction), false);
-	ERR_FAIL_COND_V(Math::is_nan(max_distance), false);
+	ZN_ASSERT_RETURN_V(!math::has_nan(ray_origin), false);
+	ZN_ASSERT_RETURN_V(!math::has_nan(ray_direction), false);
+	ZN_ASSERT_RETURN_V(!Math::is_nan(max_distance), false);
 
 	const float g_infinite = 9999999;
 
@@ -24,14 +48,16 @@ bool voxel_raycast(Vector3 ray_origin, Vector3 ray_direction, Predicate_F predic
 	// This raycasting technique is described here :
 	// http://www.cse.yorku.ca/~amana/research/grid.pdf
 
+	// See also https://www.youtube.com/watch?v=NbSee-XM7WA
+
 	// Note : the grid is assumed to have 1-unit square cells.
 
-	ERR_FAIL_COND_V(ray_direction.is_normalized() == false, false); // Must be normalized
+	ZN_ASSERT_RETURN_V(math::is_normalized(ray_direction), false); // Must be normalized
 
 	/* Initialisation */
 
 	// Voxel position
-	Vector3i hit_pos = Vector3iUtil::from_floored(ray_origin);
+	Vector3i hit_pos = math::floor_to_int(ray_origin);
 	Vector3i hit_prev_pos = hit_pos;
 
 	// Voxel step
@@ -158,7 +184,7 @@ bool voxel_raycast(Vector3 ray_origin, Vector3 ray_direction, Predicate_F predic
 			}
 		}
 
-	} while (!predicate(hit_pos));
+	} while (!predicate({ hit_prev_pos, t_prev, hit_pos, t }));
 
 	out_hit_pos = hit_pos;
 	out_prev_pos = hit_prev_pos;

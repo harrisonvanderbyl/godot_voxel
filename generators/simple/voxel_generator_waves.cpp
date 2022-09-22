@@ -1,8 +1,7 @@
 #include "voxel_generator_waves.h"
 #include <cmath>
 
-using namespace zylann;
-using namespace voxel;
+namespace zylann::voxel {
 
 VoxelGeneratorWaves::VoxelGeneratorWaves() {
 	_parameters.pattern_size = Vector2(30, 30);
@@ -13,7 +12,7 @@ VoxelGeneratorWaves::VoxelGeneratorWaves() {
 
 VoxelGeneratorWaves::~VoxelGeneratorWaves() {}
 
-VoxelGenerator::Result VoxelGeneratorWaves::generate_block(VoxelBlockRequest &input) {
+VoxelGenerator::Result VoxelGeneratorWaves::generate_block(VoxelGenerator::VoxelQueryData &input) {
 	Parameters params;
 	{
 		RWLockRead rlock(_parameters_lock);
@@ -40,8 +39,8 @@ Vector2 VoxelGeneratorWaves::get_pattern_size() const {
 
 void VoxelGeneratorWaves::set_pattern_size(Vector2 size) {
 	RWLockWrite wlock(_parameters_lock);
-	size.x = math::max(size.x, 0.1f);
-	size.y = math::max(size.y, 0.1f);
+	size.x = math::maxf(size.x, 0);
+	size.y = math::maxf(size.y, 0);
 	_parameters.pattern_size = size;
 }
 
@@ -65,3 +64,5 @@ void VoxelGeneratorWaves::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "pattern_size"), "set_pattern_size", "get_pattern_size");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "pattern_offset"), "set_pattern_offset", "get_pattern_offset");
 }
+
+} // namespace zylann::voxel

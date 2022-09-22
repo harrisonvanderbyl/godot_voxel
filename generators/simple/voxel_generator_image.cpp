@@ -55,7 +55,7 @@ bool VoxelGeneratorImage::is_blur_enabled() const {
 	return _parameters.blur_enabled;
 }
 
-VoxelGenerator::Result VoxelGeneratorImage::generate_block(VoxelBlockRequest &input) {
+VoxelGenerator::Result VoxelGeneratorImage::generate_block(VoxelGenerator::VoxelQueryData &input) {
 	VoxelBufferInternal &out_buffer = input.voxel_buffer;
 
 	Parameters params;
@@ -90,8 +90,8 @@ void VoxelGeneratorImage::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_blur_enabled", "enable"), &VoxelGeneratorImage::set_blur_enabled);
 	ClassDB::bind_method(D_METHOD("is_blur_enabled"), &VoxelGeneratorImage::is_blur_enabled);
 
-	ADD_PROPERTY(
-			PropertyInfo(Variant::OBJECT, "image", PROPERTY_HINT_RESOURCE_TYPE, "Image"), "set_image", "get_image");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "image", PROPERTY_HINT_RESOURCE_TYPE, Image::get_class_static()),
+			"set_image", "get_image");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "blur_enabled"), "set_blur_enabled", "is_blur_enabled");
 }
 

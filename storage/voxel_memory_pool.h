@@ -1,12 +1,14 @@
 #ifndef VOXEL_MEMORY_POOL_H
 #define VOXEL_MEMORY_POOL_H
 
+#include "../util/dstack.h"
 #include "../util/fixed_array.h"
 #include "../util/math/funcs.h"
-#include "core/os/mutex.h"
+#include "../util/thread/mutex.h"
 
+#include <atomic>
 #include <limits>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 namespace zylann::voxel {
@@ -21,21 +23,21 @@ private:
 #ifdef DEBUG_ENABLED
 	struct DebugUsedBlocks {
 		Mutex mutex;
-		std::unordered_set<void *> blocks;
+		std::unordered_map<void *, dstack::Info> blocks;
 
-		void add(void *block) {
+		void add(void *mem) {
 			MutexLock lock(mutex);
-			auto it = blocks.find(block);
+			auto it = blocks.find(mem);
 			// Must not add twice
-			CRASH_COND(it != blocks.end());
-			blocks.insert(block);
+			ZN_ASSERT(it == blocks.end());
+			blocks.insert({ mem, dstack::Info() });
 		}
 
 		void remove(void *block) {
 			MutexLock lock(mutex);
 			auto it = blocks.find(block);
 			// Must exist
-			CRASH_COND(it == blocks.end());
+			ZN_ASSERT(it != blocks.end());
 			blocks.erase(it);
 		}
 	};
@@ -53,7 +55,7 @@ private:
 public:
 	static void create_singleton();
 	static void destroy_singleton();
-	static VoxelMemoryPool *get_singleton();
+	static VoxelMemoryPool &get_singleton();
 
 	VoxelMemoryPool();
 	~VoxelMemoryPool();
@@ -78,14 +80,18 @@ private:
 	inline unsigned int get_pool_index_from_size(size_t size) const {
 #ifdef DEBUG_ENABLED
 		// `get_next_power_of_two_32` takes unsigned int
-		CRASH_COND(size > std::numeric_limits<unsigned int>::max());
+		ZN_ASSERT(size <= std::numeric_limits<unsigned int>::max());
 #endif
 		return math::get_shift_from_power_of_two_32(math::get_next_power_of_two_32(size));
 	}
 
-	inline size_t get_size_from_pool_index(unsigned int i) const {
+	static inline size_t get_size_from_pool_index(unsigned int i) {
 		return size_t(1) << i;
 	}
+
+#ifdef DEBUG_ENABLED
+	void debug_print_used_blocks(unsigned int max_amount);
+#endif
 
 	// We handle allocations with up to 2^20 = 1,048,576 bytes.
 	// This is chosen based on practical needs.
@@ -96,7 +102,7 @@ private:
 	DebugUsedBlocks _debug_nonpooled_used_blocks;
 #endif
 
-	unsigned int _used_blocks = 0; // TODO Make atomic?
+	std::atomic_uint32_t _used_blocks = 0;
 	size_t _used_memory = 0;
 	size_t _total_memory = 0;
 };

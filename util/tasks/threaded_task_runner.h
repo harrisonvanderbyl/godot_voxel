@@ -3,44 +3,15 @@
 
 #include "../fixed_array.h"
 #include "../span.h"
-
-#include <core/os/mutex.h>
-#include <core/os/semaphore.h>
-#include <core/os/thread.h>
-#include <core/string/ustring.h>
+#include "../thread/mutex.h"
+#include "../thread/semaphore.h"
+#include "../thread/thread.h"
+#include "threaded_task.h"
 
 #include <queue>
-
-class Thread;
+#include <string>
 
 namespace zylann {
-
-struct ThreadedTaskContext {
-	uint8_t thread_index;
-};
-
-class IThreadedTask {
-public:
-	virtual ~IThreadedTask() {}
-
-	// Called from within the thread pool
-	virtual void run(ThreadedTaskContext ctx) = 0;
-
-	// Convenience method which can be called by the scheduler of the task (usually on the main thread)
-	// in order to apply results. It is not called from the thread pool.
-	virtual void apply_result() = 0;
-
-	// Lower values means higher priority.
-	// Can change between two calls. The thread pool will poll this value regularly over some time interval.
-	virtual int get_priority() {
-		return 0;
-	}
-
-	// May return `true` in order for the thread pool to skip the task
-	virtual bool is_cancelled() {
-		return false;
-	}
-};
 
 // Generic thread pool that performs batches of tasks based on dynamic priority
 class ThreadedTaskRunner {
@@ -59,7 +30,7 @@ public:
 
 	// Set name prefix to recognize threads of this pool in debug tools.
 	// Must be called before configuring thread count.
-	void set_name(String name);
+	void set_name(const char *name);
 
 	// TODO Add ability to change it while running without skipping tasks
 	// Can't be changed after tasks have been queued
@@ -83,11 +54,16 @@ public:
 
 	// Schedules a task.
 	// Ownership is NOT passed to the pool, so make sure you get them back when completed if you want to delete them.
-	void enqueue(IThreadedTask *task);
+	// All tasks scheduled with `serial=true` will run one after the other, using one thread at a time.
+	// Tasks scheduled with `serial=false` can run in parallel using multiple threads.
+	// Serial execution is useful when such tasks cannot run in parallel due to locking a shared resource. This avoids
+	// clogging up all threads with waiting tasks.
+	void enqueue(IThreadedTask *task, bool serial);
 	// Schedules multiple tasks at once. Involves less internal locking.
-	void enqueue(Span<IThreadedTask *> tasks);
+	void enqueue(Span<IThreadedTask *> new_tasks, bool serial);
 
-	// TODO Lambda might not be the best API. memcpying to a vector would ensure we lock for a shorter time.
+	// TODO Optimization: lambda might not be the best API. memcpying to a vector would ensure we lock for a shorter
+	// time.
 	template <typename F>
 	void dequeue_completed_tasks(F f) {
 		MutexLock lock(_completed_tasks_mutex);
@@ -107,8 +83,9 @@ public:
 private:
 	struct TaskItem {
 		IThreadedTask *task = nullptr;
-		int cached_priority = 99999;
-		uint32_t last_priority_update_time = 0;
+		TaskPriority cached_priority;
+		bool is_serial = false;
+		uint64_t last_priority_update_time_ms = 0;
 	};
 
 	struct ThreadData {
@@ -118,7 +95,7 @@ private:
 		bool stop = false;
 		bool waiting = false;
 		State debug_state = STATE_STOPPED;
-		String name;
+		std::string name;
 
 		void wait_to_finish_and_reset() {
 			thread.wait_to_finish();
@@ -148,10 +125,15 @@ private:
 	std::vector<IThreadedTask *> _completed_tasks;
 	Mutex _completed_tasks_mutex;
 
+	// TODO Remove batching, it's not really useful
 	uint32_t _batch_count = 1;
-	uint32_t _priority_update_period = 32;
+	uint32_t _priority_update_period_ms = 32;
 
-	String _name;
+	// This boolean is also guarded with `_tasks_mutex`.
+	// Tasks marked as "serial" must be executed by only one thread at a time.
+	bool _is_serial_task_running = false;
+
+	std::string _name;
 
 	unsigned int _debug_received_tasks = 0;
 	unsigned int _debug_completed_tasks = 0;

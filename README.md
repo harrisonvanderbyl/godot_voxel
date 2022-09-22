@@ -9,8 +9,8 @@ A C++ module for creating volumetric worlds in Godot Engine.
 
 [![Discord](https://img.shields.io/discord/850070170793410582?style=flat-square&logo=discord "Discord")](https://discord.gg/pkXmESmrAR)
 
-![Blocky screenshot](doc/source/images/blocky_screenshot.png)
-![Smooth screenshot](doc/source/images/smooth_screenshot.png)
+![Blocky screenshot](doc/source/images/blocky_screenshot.webp)
+![Smooth screenshot](doc/source/images/smooth_screenshot.webp)
 ![Textured screenshot](doc/source/images/textured-terrain.jpg)
 
 Features
@@ -52,27 +52,38 @@ These are some ideas that may or may not be implemented in the future:
 Supporters
 -----------
 
-This module is a non-profit project developped by voluntary contributors. The following is the list of the current donors.
+This module is a non-profit project developed by voluntary contributors. The following is the list of the current donors.
 Thanks for your support :)
+
+### Gold supporters
+
+```
+Aaron Franke (aaronfranke)
+```
+
+### Silver supporters
+
+```
+TheConceptBoy
+Chris Bolton (yochrisbolton)
+Gamerfiend (Snowminx) 
+greenlion (Justin Swanhart) 
+segfault-god (jp.owo.Manda)
+RonanZe
+Phyronnaz
+NoFr1ends (Lynx)
+```
 
 ### Supporters
 
 ```
-wacyym
-Sergey Lapin (slapin)
-Jonas (NoFr1ends)
-lenis0012
-Phyronnaz
-RonanZe
-furtherorbit
-jp.owo.Manda (segfault-god)
-hidemat
-Jakub Buriánek (Buri)
-Justin Swanhart (Greenlion)
-Sebastian Clausen (sclausen)
-MrGreaterThan
-baals
+rcorre (Ryan Roden-Corrent) 
+duchainer (Raphaël Duchaîne)
+MadMartian
+stackdump (stackdump.eth)
 Treer
-stackdump.eth
+MrGreaterThan
+lenis0012
 ```
+
 

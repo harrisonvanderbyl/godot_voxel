@@ -12,10 +12,7 @@ public:
 	VoxelGeneratorWaves();
 	~VoxelGeneratorWaves();
 
-	void set_channel(VoxelBuffer::ChannelId channel);
-	VoxelBuffer::ChannelId get_channel() const;
-
-	Result generate_block(VoxelBlockRequest &input) override;
+	Result generate_block(VoxelGenerator::VoxelQueryData &input) override;
 
 	Vector2 get_pattern_size() const;
 	void set_pattern_size(Vector2 size);

@@ -6,7 +6,10 @@
 
 namespace zylann {
 
-DirectStaticBody::DirectStaticBody() {}
+DirectStaticBody::DirectStaticBody() {
+	// Nothing here. It is a thin RID wrapper,
+	// no calls to PhysicsServer3D are made until we called one of the functions.
+}
 
 DirectStaticBody::~DirectStaticBody() {
 	destroy();
@@ -38,7 +41,7 @@ bool DirectStaticBody::is_valid() const {
 }
 
 void DirectStaticBody::set_transform(Transform3D transform) {
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(!_body.is_valid());
 	PhysicsServer3D::get_singleton()->body_set_state(_body, PhysicsServer3D::BODY_STATE_TRANSFORM, transform);
 

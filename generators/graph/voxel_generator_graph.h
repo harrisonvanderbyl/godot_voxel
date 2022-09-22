@@ -1,10 +1,14 @@
 #ifndef VOXEL_GENERATOR_GRAPH_H
 #define VOXEL_GENERATOR_GRAPH_H
 
+#include "../../util/thread/rw_lock.h"
 #include "../voxel_generator.h"
 #include "program_graph.h"
 #include "voxel_graph_runtime.h"
+
 #include <memory>
+
+class Image;
 
 namespace zylann::voxel {
 
@@ -13,60 +17,66 @@ class VoxelGeneratorGraph : public VoxelGenerator {
 public:
 	static const char *SIGNAL_NODE_NAME_CHANGED;
 
+	// Node indexes within the DB.
+	// Don't use these in saved data,
+	// they can change depending on which features the module is compiled with.
 	enum NodeTypeID {
-		NODE_CONSTANT = 0,
-		NODE_INPUT_X = 1,
-		NODE_INPUT_Y = 2,
-		NODE_INPUT_Z = 3,
-		NODE_OUTPUT_SDF = 4,
-		NODE_ADD = 5,
-		NODE_SUBTRACT = 6,
-		NODE_MULTIPLY = 7,
-		NODE_DIVIDE = 8,
-		NODE_SIN = 9,
-		NODE_FLOOR = 10,
-		NODE_ABS = 11,
-		NODE_SQRT = 12,
-		NODE_FRACT = 13,
-		NODE_STEPIFY = 14,
-		NODE_WRAP = 15,
-		NODE_MIN = 16,
-		NODE_MAX = 17,
-		NODE_DISTANCE_2D = 18,
-		NODE_DISTANCE_3D = 19,
-		NODE_CLAMP = 20,
-		NODE_MIX = 21,
-		NODE_REMAP = 22,
-		NODE_SMOOTHSTEP = 23,
-		NODE_CURVE = 24,
-		NODE_SELECT = 25,
-		NODE_NOISE_2D = 26,
-		NODE_NOISE_3D = 27,
-		NODE_IMAGE_2D = 28,
-		NODE_SDF_PLANE = 29,
-		NODE_SDF_BOX = 30,
-		NODE_SDF_SPHERE = 31,
-		NODE_SDF_TORUS = 32,
-		NODE_SDF_PREVIEW = 33, // For debugging
-		NODE_SDF_SPHERE_HEIGHTMAP = 34,
-		NODE_SDF_SMOOTH_UNION = 35,
-		NODE_SDF_SMOOTH_SUBTRACT = 36,
-		NODE_NORMALIZE_3D = 37,
-		NODE_FAST_NOISE_2D = 38,
-		NODE_FAST_NOISE_3D = 39,
-		NODE_FAST_NOISE_GRADIENT_2D = 40,
-		NODE_FAST_NOISE_GRADIENT_3D = 41,
-		NODE_OUTPUT_WEIGHT = 42,
+		NODE_CONSTANT,
+		NODE_INPUT_X,
+		NODE_INPUT_Y,
+		NODE_INPUT_Z,
+		NODE_OUTPUT_SDF,
+		NODE_ADD,
+		NODE_SUBTRACT,
+		NODE_MULTIPLY,
+		NODE_DIVIDE,
+		NODE_SIN,
+		NODE_FLOOR,
+		NODE_ABS,
+		NODE_SQRT,
+		NODE_FRACT,
+		NODE_STEPIFY,
+		NODE_WRAP,
+		NODE_MIN,
+		NODE_MAX,
+		NODE_DISTANCE_2D,
+		NODE_DISTANCE_3D,
+		NODE_CLAMP,
+		NODE_CLAMP_C,
+		NODE_MIX,
+		NODE_REMAP,
+		NODE_SMOOTHSTEP,
+		NODE_CURVE,
+		NODE_SELECT,
+		NODE_NOISE_2D,
+		NODE_NOISE_3D,
+		NODE_IMAGE_2D,
+		NODE_SDF_PLANE,
+		NODE_SDF_BOX,
+		NODE_SDF_SPHERE,
+		NODE_SDF_TORUS,
+		NODE_SDF_PREVIEW, // For debugging
+		NODE_SDF_SPHERE_HEIGHTMAP,
+		NODE_SDF_SMOOTH_UNION,
+		NODE_SDF_SMOOTH_SUBTRACT,
+		NODE_NORMALIZE_3D,
+		NODE_FAST_NOISE_2D,
+		NODE_FAST_NOISE_3D,
+		NODE_FAST_NOISE_GRADIENT_2D,
+		NODE_FAST_NOISE_GRADIENT_3D,
+		NODE_OUTPUT_WEIGHT,
+		NODE_OUTPUT_TYPE,
 #ifdef VOXEL_ENABLE_FAST_NOISE_2
-		NODE_FAST_NOISE_2_2D = 43,
-		NODE_FAST_NOISE_2_3D = 44,
+		NODE_FAST_NOISE_2_2D,
+		NODE_FAST_NOISE_2_3D,
 #endif
+		NODE_OUTPUT_SINGLE_TEXTURE,
+		NODE_EXPRESSION,
+		NODE_POWI, // pow(x, constant positive integer)
+		NODE_POW, // pow(x, y)
+		NODE_INPUT_SDF,
 
-#ifdef VOXEL_ENABLE_FAST_NOISE_2
-		NODE_TYPE_COUNT = 45
-#else
-		NODE_TYPE_COUNT = 43
-#endif
+		NODE_TYPE_COUNT
 	};
 
 	VoxelGeneratorGraph();
@@ -81,12 +91,21 @@ public:
 	uint32_t create_node(NodeTypeID type_id, Vector2 position, uint32_t id = ProgramGraph::NULL_ID);
 	void remove_node(uint32_t node_id);
 
+	// Checks if the specified connection can be created
 	bool can_connect(
 			uint32_t src_node_id, uint32_t src_port_index, uint32_t dst_node_id, uint32_t dst_port_index) const;
+
+	// Checks if the specified connection is valid (without considering existing connections)
+	bool is_valid_connection(
+			uint32_t src_node_id, uint32_t src_port_index, uint32_t dst_node_id, uint32_t dst_port_index) const;
+
 	void add_connection(uint32_t src_node_id, uint32_t src_port_index, uint32_t dst_node_id, uint32_t dst_port_index);
 	void remove_connection(
 			uint32_t src_node_id, uint32_t src_port_index, uint32_t dst_node_id, uint32_t dst_port_index);
 	void get_connections(std::vector<ProgramGraph::Connection> &connections) const;
+
+	// Finds which source port is connected to the given destination.
+	// Returns false if `dst` has no inbound connection.
 	bool try_get_connection_to(ProgramGraph::PortLocation dst, ProgramGraph::PortLocation &out_src) const;
 
 	bool has_node(uint32_t node_id) const;
@@ -98,8 +117,15 @@ public:
 	Variant get_node_param(uint32_t node_id, uint32_t param_index) const;
 	void set_node_param(uint32_t node_id, uint32_t param_index, Variant value);
 
+	static bool get_expression_variables(std::string_view code, std::vector<std::string_view> &vars);
+	void get_expression_node_inputs(uint32_t node_id, std::vector<std::string> &out_names) const;
+	void set_expression_node_inputs(uint32_t node_id, PackedStringArray names);
+
 	Variant get_node_default_input(uint32_t node_id, uint32_t input_index) const;
 	void set_node_default_input(uint32_t node_id, uint32_t input_index, Variant value);
+
+	bool get_node_default_inputs_autoconnect(uint32_t node_id) const;
+	void set_node_default_inputs_autoconnect(uint32_t node_id, bool enabled);
 
 	Vector2 get_node_gui_position(uint32_t node_id) const;
 	void set_node_gui_position(uint32_t node_id, Vector2 pos);
@@ -110,7 +136,7 @@ public:
 		return _graph.generate_node_id();
 	}
 
-	int get_nodes_count() const;
+	unsigned int get_nodes_count() const;
 
 	void load_plane_preset();
 
@@ -138,12 +164,18 @@ public:
 
 	int get_used_channels_mask() const override;
 
-	Result generate_block(VoxelBlockRequest &input) override;
+	Result generate_block(VoxelGenerator::VoxelQueryData &input) override;
 	//float generate_single(const Vector3i &position);
 	bool supports_single_generation() const override {
 		return true;
 	}
+	bool supports_series_generation() const override {
+		return true;
+	}
 	VoxelSingleValue generate_single(Vector3i position, unsigned int channel) override;
+
+	void generate_series(Span<const float> positions_x, Span<const float> positions_y, Span<const float> positions_z,
+			unsigned int channel, Span<float> out_values, Vector3f min_pos, Vector3f max_pos) override;
 
 	Ref<Resource> duplicate(bool p_subresources) const override;
 
@@ -151,27 +183,47 @@ public:
 
 	void bake_sphere_bumpmap(Ref<Image> im, float ref_radius, float min_height, float max_height);
 	void bake_sphere_normalmap(Ref<Image> im, float ref_radius, float strength);
+	String generate_shader();
 
 	// Internal
 
-	VoxelGraphRuntime::CompilationResult compile();
+	VoxelGraphRuntime::CompilationResult compile(bool debug);
 	bool is_good() const;
 
 	void generate_set(Span<float> in_x, Span<float> in_y, Span<float> in_z);
+	void generate_series(Span<float> in_x, Span<float> in_y, Span<float> in_z, Span<float> in_sdf);
 
 	// Returns state from the last generator used in the current thread
 	static const VoxelGraphRuntime::State &get_last_state_from_current_thread();
-	static Span<const int> get_last_execution_map_debug_from_current_thread();
+	static Span<const uint32_t> get_last_execution_map_debug_from_current_thread();
 
 	bool try_get_output_port_address(ProgramGraph::PortLocation port, uint32_t &out_address) const;
+	int get_sdf_output_port_address() const;
 
 	void find_dependencies(uint32_t node_id, std::vector<uint32_t> &out_dependencies) const;
 
 	// Debug
 
 	math::Interval debug_analyze_range(Vector3i min_pos, Vector3i max_pos, bool optimize_execution_map) const;
-	float debug_measure_microseconds_per_voxel(bool singular);
+
+	struct NodeProfilingInfo {
+		uint32_t node_id;
+		uint32_t microseconds;
+	};
+
+	float debug_measure_microseconds_per_voxel(bool singular, std::vector<NodeProfilingInfo> *node_profiling_info);
+
 	void debug_load_waves_preset();
+
+	// Editor
+
+#ifdef TOOLS_ENABLED
+	void get_configuration_warnings(TypedArray<String> &out_warnings) const override;
+
+	// Gets a hash that attempts to only change if the output of the graph is different.
+	// This is computed from the editable graph data, not the compiled result.
+	uint64_t get_output_graph_hash() const;
+#endif
 
 private:
 	Dictionary get_graph_as_variant_data() const;
@@ -192,6 +244,7 @@ private:
 	float _b_generate_single(Vector3 pos);
 	Vector2 _b_debug_analyze_range(Vector3 min_pos, Vector3 max_pos) const;
 	Dictionary _b_compile();
+	float _b_debug_measure_microseconds_per_voxel(bool singular);
 
 	struct WeightOutput {
 		unsigned int layer_index;
@@ -233,8 +286,16 @@ private:
 		// Indices that are not used in the graph.
 		// This is used when there are less than 4 texture weight outputs.
 		FixedArray<uint8_t, 4> spare_texture_indices;
-		// Index to the SDF output
+
+		int sdf_output_index = -1;
 		int sdf_output_buffer_index = -1;
+
+		int type_output_index = -1;
+		int type_output_buffer_index = -1;
+
+		int single_texture_output_index = -1;
+		int single_texture_output_buffer_index = -1;
+
 		FixedArray<WeightOutput, 16> weight_outputs;
 		// List of indices to feed queries. The order doesn't matter, can be different from `weight_outputs`.
 		FixedArray<unsigned int, 16> weight_output_indices;
@@ -248,12 +309,16 @@ private:
 		std::vector<float> x_cache;
 		std::vector<float> y_cache;
 		std::vector<float> z_cache;
+		std::vector<float> input_sdf_cache;
 		VoxelGraphRuntime::State state;
 		VoxelGraphRuntime::ExecutionMap optimized_execution_map;
 	};
 
 	static thread_local Cache _cache;
 };
+
+ProgramGraph::Node *create_node_internal(ProgramGraph &graph, VoxelGeneratorGraph::NodeTypeID type_id, Vector2 position,
+		uint32_t id, bool create_default_instances);
 
 } // namespace zylann::voxel
 

@@ -1,11 +1,12 @@
 #include "voxel_tool_buffer.h"
-#include "../storage/voxel_buffer.h"
+#include "../storage/voxel_buffer_gd.h"
+#include "../util/math/conv.h"
 #include "../util/profiling.h"
 #include "funcs.h"
 
 namespace zylann::voxel {
 
-VoxelToolBuffer::VoxelToolBuffer(Ref<VoxelBuffer> vb) {
+VoxelToolBuffer::VoxelToolBuffer(Ref<gd::VoxelBuffer> vb) {
 	ERR_FAIL_COND(vb.is_null());
 	_buffer = vb;
 }
@@ -24,9 +25,9 @@ void VoxelToolBuffer::do_sphere(Vector3 center, float radius) {
 		return;
 	}
 
-	VOXEL_PROFILE_SCOPE();
+	ZN_PROFILE_SCOPE();
 
-	Box3i box(Vector3iUtil::from_floored(center) - Vector3iUtil::create(Math::floor(radius)),
+	Box3i box(math::floor_to_int(center) - Vector3iUtil::create(Math::floor(radius)),
 			Vector3iUtil::create(Math::ceil(radius) * 2));
 	box.clip(Box3i(Vector3i(), _buffer->get_buffer().get_size()));
 
@@ -64,16 +65,16 @@ void VoxelToolBuffer::_post_edit(const Box3i &box) {
 
 void VoxelToolBuffer::set_voxel_metadata(Vector3i pos, Variant meta) {
 	ERR_FAIL_COND(_buffer.is_null());
-	_buffer->get_buffer().set_voxel_metadata(pos, meta);
+	_buffer->set_voxel_metadata(pos, meta);
 }
 
 Variant VoxelToolBuffer::get_voxel_metadata(Vector3i pos) const {
 	ERR_FAIL_COND_V(_buffer.is_null(), Variant());
-	return _buffer->get_buffer().get_voxel_metadata(pos);
+	return _buffer->get_voxel_metadata(pos);
 }
 
 void VoxelToolBuffer::paste(
-		Vector3i p_pos, Ref<VoxelBuffer> p_voxels, uint8_t channels_mask, bool use_mask, uint64_t mask_value) {
+		Vector3i p_pos, Ref<gd::VoxelBuffer> p_voxels, uint8_t channels_mask, bool use_mask, uint64_t mask_value) {
 	// TODO Support `use_mask` properly
 	if (use_mask) {
 		mask_value = 0xffffffffffffffff;
@@ -116,7 +117,7 @@ void VoxelToolBuffer::paste(
 						dst.set_voxel(v, x, y, z, channel_index);
 
 						// Overwrite previous metadata
-						dst.set_voxel_metadata(Vector3i(x, y, z), Variant());
+						dst.erase_voxel_metadata(Vector3i(x, y, z));
 					}
 				}
 			}

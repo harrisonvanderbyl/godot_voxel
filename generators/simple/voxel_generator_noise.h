@@ -1,8 +1,9 @@
 #ifndef VOXEL_GENERATOR_NOISE_H
 #define VOXEL_GENERATOR_NOISE_H
 
+#include "../../storage/voxel_buffer_gd.h"
 #include "../voxel_generator.h"
-#include <modules/opensimplex/open_simplex_noise.h>
+#include <modules/noise/noise.h>
 
 namespace zylann::voxel {
 
@@ -13,12 +14,13 @@ public:
 	VoxelGeneratorNoise();
 	~VoxelGeneratorNoise();
 
-	void set_channel(VoxelBuffer::ChannelId p_channel);
-	VoxelBuffer::ChannelId get_channel() const;
+	void set_channel(VoxelBufferInternal::ChannelId p_channel);
+	VoxelBufferInternal::ChannelId get_channel() const;
+
 	int get_used_channels_mask() const override;
 
-	void set_noise(Ref<OpenSimplexNoise> noise);
-	Ref<OpenSimplexNoise> get_noise() const;
+	void set_noise(Ref<Noise> noise);
+	Ref<Noise> get_noise() const;
 
 	void set_height_start(real_t y);
 	real_t get_height_start() const;
@@ -26,19 +28,21 @@ public:
 	void set_height_range(real_t hrange);
 	real_t get_height_range() const;
 
-	Result generate_block(VoxelBlockRequest &input) override;
+	Result generate_block(VoxelGenerator::VoxelQueryData &input) override;
 
-protected:
+private:
 	void _on_noise_changed();
+
+	void _b_set_channel(gd::VoxelBuffer::ChannelId p_channel);
+	gd::VoxelBuffer::ChannelId _b_get_channel() const;
 
 	static void _bind_methods();
 
-private:
-	Ref<OpenSimplexNoise> _noise;
+	Ref<Noise> _noise;
 
 	struct Parameters {
 		VoxelBufferInternal::ChannelId channel = VoxelBufferInternal::CHANNEL_SDF;
-		Ref<OpenSimplexNoise> noise;
+		Ref<Noise> noise;
 		float height_start = 0;
 		float height_range = 300;
 	};

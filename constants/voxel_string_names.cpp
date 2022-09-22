@@ -15,6 +15,11 @@ void VoxelStringNames::destroy_singleton() {
 	g_singleton = nullptr;
 }
 
+const VoxelStringNames &VoxelStringNames::get_singleton() {
+	CRASH_COND(g_singleton == nullptr);
+	return *g_singleton;
+}
+
 VoxelStringNames::VoxelStringNames() {
 	_emerge_block = StaticCString::create("_emerge_block");
 	_immerge_block = StaticCString::create("_immerge_block");
@@ -32,6 +37,20 @@ VoxelStringNames::VoxelStringNames() {
 	u_transition_mask = StaticCString::create("u_transition_mask");
 	u_block_local_transform = StaticCString::create("u_block_local_transform");
 	u_lod_fade = StaticCString::create("u_lod_fade");
+
+	voxel_normalmap_atlas = StaticCString::create("voxel_normalmap_atlas");
+	voxel_normalmap_lookup = StaticCString::create("voxel_normalmap_lookup");
+
+	u_voxel_normalmap_atlas = StaticCString::create("u_voxel_normalmap_atlas");
+	u_voxel_cell_lookup = StaticCString::create("u_voxel_cell_lookup");
+	u_voxel_cell_size = StaticCString::create("u_voxel_cell_size");
+	u_voxel_block_size = StaticCString::create("u_voxel_block_size");
+	u_voxel_virtual_texture_fade = StaticCString::create("u_voxel_virtual_texture_fade");
+	u_voxel_virtual_texture_tile_size = StaticCString::create("u_voxel_virtual_texture_tile_size");
+
+#ifdef DEBUG_ENABLED
+	_voxel_debug_vt_position = StaticCString::create("_voxel_debug_vt_position");
+#endif
 }
 
 } // namespace zylann::voxel

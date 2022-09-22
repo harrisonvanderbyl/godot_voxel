@@ -1,6 +1,7 @@
 #include "voxel_generator_noise.h"
 #include <core/config/engine.h>
 #include <core/core_string_names.h>
+#include <modules/noise/fastnoise_lite.h>
 
 namespace zylann::voxel {
 
@@ -8,7 +9,7 @@ VoxelGeneratorNoise::VoxelGeneratorNoise() {}
 
 VoxelGeneratorNoise::~VoxelGeneratorNoise() {}
 
-void VoxelGeneratorNoise::set_noise(Ref<OpenSimplexNoise> noise) {
+void VoxelGeneratorNoise::set_noise(Ref<Noise> noise) {
 	if (_noise == noise) {
 		return;
 	}
@@ -17,7 +18,7 @@ void VoxelGeneratorNoise::set_noise(Ref<OpenSimplexNoise> noise) {
 				CoreStringNames::get_singleton()->changed, callable_mp(this, &VoxelGeneratorNoise::_on_noise_changed));
 	}
 	_noise = noise;
-	Ref<OpenSimplexNoise> copy;
+	Ref<Noise> copy;
 	if (_noise.is_valid()) {
 		_noise->connect(
 				CoreStringNames::get_singleton()->changed, callable_mp(this, &VoxelGeneratorNoise::_on_noise_changed));
@@ -35,14 +36,13 @@ void VoxelGeneratorNoise::_on_noise_changed() {
 	_parameters.noise = _noise->duplicate();
 }
 
-void VoxelGeneratorNoise::set_channel(VoxelBuffer::ChannelId p_channel) {
-	VoxelBufferInternal::ChannelId channel = VoxelBufferInternal::ChannelId(p_channel);
-	ERR_FAIL_INDEX(channel, VoxelBufferInternal::MAX_CHANNELS);
+void VoxelGeneratorNoise::set_channel(VoxelBufferInternal::ChannelId p_channel) {
+	ERR_FAIL_INDEX(p_channel, VoxelBufferInternal::MAX_CHANNELS);
 	bool changed = false;
 	{
 		RWLockWrite wlock(_parameters_lock);
-		if (_parameters.channel != channel) {
-			_parameters.channel = channel;
+		if (_parameters.channel != p_channel) {
+			_parameters.channel = p_channel;
 			changed = true;
 		}
 	}
@@ -51,9 +51,9 @@ void VoxelGeneratorNoise::set_channel(VoxelBuffer::ChannelId p_channel) {
 	}
 }
 
-VoxelBuffer::ChannelId VoxelGeneratorNoise::get_channel() const {
+VoxelBufferInternal::ChannelId VoxelGeneratorNoise::get_channel() const {
 	RWLockRead rlock(_parameters_lock);
-	return VoxelBuffer::ChannelId(_parameters.channel);
+	return _parameters.channel;
 }
 
 int VoxelGeneratorNoise::get_used_channels_mask() const {
@@ -61,7 +61,7 @@ int VoxelGeneratorNoise::get_used_channels_mask() const {
 	return (1 << _parameters.channel);
 }
 
-Ref<OpenSimplexNoise> VoxelGeneratorNoise::get_noise() const {
+Ref<Noise> VoxelGeneratorNoise::get_noise() const {
 	return _noise;
 }
 
@@ -88,6 +88,7 @@ real_t VoxelGeneratorNoise::get_height_range() const {
 	return _parameters.height_range;
 }
 
+/*
 // For isosurface use cases, noise can be "shaped" by calculating only the first octave,
 // and discarding the next ones if beyond some distance away from the isosurface,
 // because then we assume next octaves won't change the sign (which crosses the surface).
@@ -120,8 +121,9 @@ static inline float get_shaped_noise(OpenSimplexNoise &noise, float x, float y, 
 
 	return sum / max;
 }
+*/
 
-VoxelGenerator::Result VoxelGeneratorNoise::generate_block(VoxelBlockRequest &input) {
+VoxelGenerator::Result VoxelGeneratorNoise::generate_block(VoxelGenerator::VoxelQueryData &input) {
 	Parameters params;
 	{
 		RWLockRead rlock(_parameters_lock);
@@ -130,7 +132,7 @@ VoxelGenerator::Result VoxelGeneratorNoise::generate_block(VoxelBlockRequest &in
 
 	ERR_FAIL_COND_V(params.noise.is_null(), Result());
 
-	OpenSimplexNoise &noise = **params.noise;
+	Noise &noise = **params.noise;
 	VoxelBufferInternal &buffer = input.voxel_buffer;
 	Vector3i origin_in_voxels = input.origin_in_voxels;
 	int lod = input.lod;
@@ -168,10 +170,10 @@ VoxelGenerator::Result VoxelGeneratorNoise::generate_block(VoxelBlockRequest &in
 		result.max_lod_hint = true;
 
 	} else {
-		const float iso_scale = noise.get_period() * 0.1;
+		const float iso_scale = 0.1f;
 		const Vector3i size = buffer.get_size();
 		const float height_range_inv = 1.f / params.height_range;
-		const float one_minus_persistence = 1.f - noise.get_persistence();
+		//const float one_minus_persistence = 1.f - noise.get_persistence();
 
 		for (int z = 0; z < size.z; ++z) {
 			int lz = origin_in_voxels.z + (z << lod);
@@ -206,12 +208,13 @@ VoxelGenerator::Result VoxelGeneratorNoise::generate_block(VoxelBlockRequest &in
 					}
 
 					// Bias is what makes noise become "matter" the lower we go, and "air" the higher we go
-					float t = (ly - params.height_start) * height_range_inv;
-					float bias = 2.0 * t - 1.0;
+					const float t = (ly - params.height_start) * height_range_inv;
+					const float bias = 2.0 * t - 1.0;
 
 					// We are near the isosurface, need to calculate noise value
-					float n = get_shaped_noise(noise, lx, ly, lz, one_minus_persistence, bias);
-					float d = (n + bias) * iso_scale;
+					//float n = get_shaped_noise(noise, lx, ly, lz, one_minus_persistence, bias);
+					const float n = noise.get_noise_3d(lx, ly, lz);
+					const float d = (n + bias) * iso_scale;
 
 					if (params.channel == VoxelBufferInternal::CHANNEL_SDF) {
 						buffer.set_voxel_f(d, x, y, z, params.channel);
@@ -228,9 +231,17 @@ VoxelGenerator::Result VoxelGeneratorNoise::generate_block(VoxelBlockRequest &in
 	return result;
 }
 
+void VoxelGeneratorNoise::_b_set_channel(gd::VoxelBuffer::ChannelId p_channel) {
+	set_channel(VoxelBufferInternal::ChannelId(p_channel));
+}
+
+gd::VoxelBuffer::ChannelId VoxelGeneratorNoise::_b_get_channel() const {
+	return gd::VoxelBuffer::ChannelId(get_channel());
+}
+
 void VoxelGeneratorNoise::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_channel", "channel"), &VoxelGeneratorNoise::set_channel);
-	ClassDB::bind_method(D_METHOD("get_channel"), &VoxelGeneratorNoise::get_channel);
+	ClassDB::bind_method(D_METHOD("set_channel", "channel"), &VoxelGeneratorNoise::_b_set_channel);
+	ClassDB::bind_method(D_METHOD("get_channel"), &VoxelGeneratorNoise::_b_get_channel);
 
 	ClassDB::bind_method(D_METHOD("set_noise", "noise"), &VoxelGeneratorNoise::set_noise);
 	ClassDB::bind_method(D_METHOD("get_noise"), &VoxelGeneratorNoise::get_noise);
@@ -243,9 +254,9 @@ void VoxelGeneratorNoise::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("_on_noise_changed"), &VoxelGeneratorNoise::_on_noise_changed);
 
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "channel", PROPERTY_HINT_ENUM, VoxelBuffer::CHANNEL_ID_HINT_STRING),
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "channel", PROPERTY_HINT_ENUM, gd::VoxelBuffer::CHANNEL_ID_HINT_STRING),
 			"set_channel", "get_channel");
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "noise", PROPERTY_HINT_RESOURCE_TYPE, "OpenSimplexNoise",
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "noise", PROPERTY_HINT_RESOURCE_TYPE, FastNoiseLite::get_class_static(),
 						 PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_EDITOR_INSTANTIATE_OBJECT),
 			"set_noise", "get_noise");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "height_start"), "set_height_start", "get_height_start");

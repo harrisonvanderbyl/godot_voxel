@@ -1,8 +1,8 @@
 #ifndef CUBE_TABLES_H
 #define CUBE_TABLES_H
 
+#include "../util/math/vector3f.h"
 #include "../util/math/vector3i.h"
-#include <core/math/vector3.h>
 
 namespace zylann::voxel::Cube {
 
@@ -19,6 +19,7 @@ enum Side {
 	SIDE_COUNT
 };
 // Alias to the above for clarity, fixing some interpretation problems regarding the side_normals table...
+// TODO Legacy: I would like to fix the X axes, they are inverted compared to the others
 enum SideAxis {
 	SIDE_POSITIVE_X = 0,
 	SIDE_NEGATIVE_X,
@@ -60,7 +61,7 @@ enum Corner {
 	CORNER_COUNT
 };
 
-extern const Vector3 g_corner_position[CORNER_COUNT];
+extern const Vector3f g_corner_position[CORNER_COUNT];
 
 extern const int g_side_quad_triangles[SIDE_COUNT][6];
 

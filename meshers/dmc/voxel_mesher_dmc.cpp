@@ -1,8 +1,10 @@
 #include "voxel_mesher_dmc.h"
 #include "../../constants/cube_tables.h"
+#include "../../util/math/conv.h"
 #include "marching_cubes_tables.h"
 #include "mesh_builder.h"
 #include "octree_tables.h"
+
 #include <core/os/time.h>
 
 // Dual marching cubes
@@ -15,7 +17,6 @@ namespace zylann::voxel::dmc {
 const float SURFACE_ISO_LEVEL = 0.0;
 
 const float NEAR_SURFACE_FACTOR = 2.0;
-const float SQRT3 = 1.7320508075688772;
 
 // Helper to access padded voxel data
 struct VoxelAccess {
@@ -28,7 +29,7 @@ struct VoxelAccess {
 		return dmc::get_hermite_value(buffer, x + offset.x, y + offset.y, z + offset.z);
 	}
 
-	inline HermiteValue get_interpolated_hermite_value(Vector3 pos) const {
+	inline HermiteValue get_interpolated_hermite_value(Vector3f pos) const {
 		pos.x += offset.x;
 		pos.y += offset.y;
 		pos.z += offset.z;
@@ -49,7 +50,7 @@ bool can_split(Vector3i node_origin, int node_size, const VoxelAccess &voxels, f
 	// Don't split if nothing is inside, i.e isolevel distance is greater than the size of the cube we are in
 	Vector3i center_pos = node_origin + Vector3iUtil::create(node_size / 2);
 	HermiteValue center_value = voxels.get_hermite_value(center_pos.x, center_pos.y, center_pos.z);
-	if (Math::abs(center_value.sdf) > SQRT3 * (float)node_size) {
+	if (Math::abs(center_value.sdf) > constants::SQRT3 * (float)node_size) {
 		return false;
 	}
 
@@ -93,28 +94,28 @@ bool can_split(Vector3i node_origin, int node_size, const VoxelAccess &voxels, f
 		Vector3i(origin.x + hstep, /**/ origin.y + hstep, /**/ origin.z + hstep) // 26
 	};
 
-	Vector3 positions_ratio[19] = { Vector3(0.5, 0.0, 0.0), //
-		Vector3(1.0, 0.0, 0.5), //
-		Vector3(0.5, 0.0, 1.0), //
-		Vector3(0.0, 0.0, 0.5), //
+	Vector3f positions_ratio[19] = { Vector3f(0.5, 0.0, 0.0), //
+		Vector3f(1.0, 0.0, 0.5), //
+		Vector3f(0.5, 0.0, 1.0), //
+		Vector3f(0.0, 0.0, 0.5), //
 
-		Vector3(0.0, 0.5, 0.0), //
-		Vector3(1.0, 0.5, 0.0), //
-		Vector3(1.0, 0.5, 1.0), //
-		Vector3(0.0, 0.5, 1.0), //
+		Vector3f(0.0, 0.5, 0.0), //
+		Vector3f(1.0, 0.5, 0.0), //
+		Vector3f(1.0, 0.5, 1.0), //
+		Vector3f(0.0, 0.5, 1.0), //
 
-		Vector3(0.5, 1.0, 0.0), //
-		Vector3(1.0, 1.0, 0.5), //
-		Vector3(0.5, 1.0, 1.0), //
-		Vector3(0.0, 1.0, 0.5), //
+		Vector3f(0.5, 1.0, 0.0), //
+		Vector3f(1.0, 1.0, 0.5), //
+		Vector3f(0.5, 1.0, 1.0), //
+		Vector3f(0.0, 1.0, 0.5), //
 
-		Vector3(0.5, 0.0, 0.5), //
-		Vector3(0.5, 0.5, 0.0), //
-		Vector3(1.0, 0.5, 0.5), //
-		Vector3(0.5, 0.5, 1.0), //
-		Vector3(0.0, 0.5, 0.5), //
-		Vector3(0.5, 1.0, 0.5), //
-		Vector3(0.5, 0.5, 0.5) };
+		Vector3f(0.5, 0.0, 0.5), //
+		Vector3f(0.5, 0.5, 0.0), //
+		Vector3f(1.0, 0.5, 0.5), //
+		Vector3f(0.5, 0.5, 1.0), //
+		Vector3f(0.0, 0.5, 0.5), //
+		Vector3f(0.5, 1.0, 0.5), //
+		Vector3f(0.5, 0.5, 0.5) };
 
 	float error = 0.0;
 
@@ -123,9 +124,9 @@ bool can_split(Vector3i node_origin, int node_size, const VoxelAccess &voxels, f
 
 		HermiteValue value = get_hermite_value(voxels.buffer, pos.x, pos.y, pos.z);
 
-		float interpolated_value = math::interpolate(v0, v1, v2, v3, v4, v5, v6, v7, positions_ratio[i]);
+		float interpolated_value = math::interpolate_trilinear(v0, v1, v2, v3, v4, v5, v6, v7, positions_ratio[i]);
 
-		float gradient_magnitude = value.gradient.length();
+		float gradient_magnitude = math::length(value.gradient);
 		if (gradient_magnitude < FLT_EPSILON) {
 			gradient_magnitude = 1.0;
 		}
@@ -138,8 +139,8 @@ bool can_split(Vector3i node_origin, int node_size, const VoxelAccess &voxels, f
 	return false;
 }
 
-inline Vector3 get_center(const OctreeNode *node) {
-	return Vector3(node->origin) + 0.5 * Vector3(node->size, node->size, node->size);
+inline Vector3f get_center(const OctreeNode *node) {
+	return to_vec3f(node->origin) + 0.5f * Vector3f(node->size, node->size, node->size);
 }
 
 class OctreeBuilderTopDown {
@@ -300,7 +301,7 @@ Array generate_debug_octree_mesh(OctreeNode *root, int scale) {
 
 		void operator()(OctreeNode *node, int depth) {
 			float shrink = depth * 0.005;
-			Vector3 o = Vector3(node->origin) + Vector3(shrink, shrink, shrink);
+			Vector3f o = to_vec3f(node->origin) + Vector3f(shrink, shrink, shrink);
 			float s = node->size - 2.0 * shrink;
 
 			Color col(1.0, (float)depth / (float)max_depth, 0.0);
@@ -308,7 +309,8 @@ Array generate_debug_octree_mesh(OctreeNode *root, int scale) {
 			int vi = arrays->positions.size();
 
 			for (int i = 0; i < Cube::CORNER_COUNT; ++i) {
-				arrays->positions.push_back(o + s * Cube::g_corner_position[i]);
+				const Vector3f pf = o + s * Cube::g_corner_position[i];
+				arrays->positions.push_back(Vector3(pf.x, pf.y, pf.z));
 				arrays->colors.push_back(col);
 			}
 
@@ -357,7 +359,8 @@ Array generate_debug_dual_grid_mesh(const DualGrid &grid, int scale) {
 		for (int j = 0; j < 8; ++j) {
 			//			Vector3 p = Vector3(g_octant_position[j][0], g_octant_position[j][1], g_octant_position[j][2]);
 			//			Vector3 n = (Vector3(0.5, 0.5, 0.5) - p).normalized();
-			positions.push_back(cell.corners[j]); // + n * 0.01);
+			const Vector3f pf = cell.corners[j]; // + n * 0.01);
+			positions.push_back(Vector3(pf.x, pf.y, pf.z));
 		}
 
 		for (int j = 0; j < Cube::EDGE_COUNT; ++j) {
@@ -406,177 +409,177 @@ inline bool is_border_front(const OctreeNode *node, int root_size) {
 	return node->origin.z + node->size == root_size;
 }
 
-inline Vector3 get_center_back(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_back(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size * 0.5;
 	p.y += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_front(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_front(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size * 0.5;
 	p.y += node->size * 0.5;
 	p.z += node->size;
 	return p;
 }
 
-inline Vector3 get_center_left(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_left(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.y += node->size * 0.5;
 	p.z += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_right(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_right(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size;
 	p.y += node->size * 0.5;
 	p.z += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_top(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_top(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size * 0.5;
 	p.y += node->size;
 	p.z += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_bottom(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_bottom(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size * 0.5;
 	p.z += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_back_top(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_back_top(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size * 0.5;
 	p.y += node->size;
 	return p;
 }
 
-inline Vector3 get_center_back_bottom(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_back_bottom(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_front_top(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_front_top(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size * 0.5;
 	p.y += node->size;
 	p.z += node->size;
 	return p;
 }
 
-inline Vector3 get_center_front_bottom(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_front_bottom(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size * 0.5;
 	p.z += node->size;
 	return p;
 }
 
-inline Vector3 get_center_left_top(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_left_top(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.y += node->size;
 	p.z += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_left_bottom(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_left_bottom(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.z += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_right_top(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_right_top(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size;
 	p.y += node->size;
 	p.z += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_right_bottom(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_right_bottom(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size;
 	p.z += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_back_left(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_back_left(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.y += node->size * 0.5;
 	return p;
 }
 
-inline Vector3 get_center_front_left(const OctreeNode *node) {
-	Vector3 p = node->origin;
-	p.y += node->size * 0.5;
-	p.z += node->size;
-	return p;
-}
-
-inline Vector3 get_center_back_right(const OctreeNode *node) {
-	Vector3 p = node->origin;
-	p.x += node->size;
-	p.y += node->size * 0.5;
-	return p;
-}
-
-inline Vector3 get_center_front_right(const OctreeNode *node) {
-	Vector3 p = node->origin;
-	p.x += node->size;
+inline Vector3f get_center_front_left(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.y += node->size * 0.5;
 	p.z += node->size;
 	return p;
 }
 
-inline Vector3 get_corner1(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_center_back_right(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
+	p.x += node->size;
+	p.y += node->size * 0.5;
+	return p;
+}
+
+inline Vector3f get_center_front_right(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
+	p.x += node->size;
+	p.y += node->size * 0.5;
+	p.z += node->size;
+	return p;
+}
+
+inline Vector3f get_corner1(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size;
 	return p;
 }
 
-inline Vector3 get_corner2(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_corner2(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size;
 	p.z += node->size;
 	return p;
 }
 
-inline Vector3 get_corner3(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_corner3(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.z += node->size;
 	return p;
 }
 
-inline Vector3 get_corner4(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_corner4(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.y += node->size;
 	return p;
 }
 
-inline Vector3 get_corner5(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_corner5(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size;
 	p.y += node->size;
 	return p;
 }
 
-inline Vector3 get_corner6(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_corner6(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.x += node->size;
 	p.y += node->size;
 	p.z += node->size;
 	return p;
 }
 
-inline Vector3 get_corner7(const OctreeNode *node) {
-	Vector3 p = node->origin;
+inline Vector3f get_corner7(const OctreeNode *node) {
+	Vector3f p = to_vec3f(node->origin);
 	p.y += node->size;
 	p.z += node->size;
 	return p;
@@ -607,8 +610,8 @@ private:
 	void face_proc_xz(OctreeNode *n0, OctreeNode *n1);
 };
 
-inline void add_cell(DualGrid &grid, const Vector3 c0, const Vector3 c1, const Vector3 c2, const Vector3 c3,
-		const Vector3 c4, const Vector3 c5, const Vector3 c6, const Vector3 c7) {
+inline void add_cell(DualGrid &grid, const Vector3f c0, const Vector3f c1, const Vector3f c2, const Vector3f c3,
+		const Vector3f c4, const Vector3f c5, const Vector3f c6, const Vector3f c7) {
 	DualCell cell;
 	cell.corners[0] = c0;
 	cell.corners[1] = c1;
@@ -655,7 +658,7 @@ void DualGridGenerator::create_border_cells(const OctreeNode *n0, const OctreeNo
 
 			// Generate back bottom corner cells
 			if (is_border_left(n0)) {
-				add_cell(grid, n0->origin, get_center_back_bottom(n0), get_center_bottom(n0),
+				add_cell(grid, to_vec3f(n0->origin), get_center_back_bottom(n0), get_center_bottom(n0),
 						get_center_left_bottom(n0), get_center_back_left(n0), get_center_back(n0), get_center(n0),
 						get_center_left(n0));
 			}
@@ -779,7 +782,7 @@ inline bool is_surface_near(OctreeNode *node) {
 	if (node->center_value.sdf == 0) {
 		return true;
 	}
-	return Math::abs(node->center_value.sdf) < node->size * SQRT3 * NEAR_SURFACE_FACTOR;
+	return Math::abs(node->center_value.sdf) < node->size * constants::SQRT3 * NEAR_SURFACE_FACTOR;
 }
 
 void DualGridGenerator::vert_proc(OctreeNode *n0, OctreeNode *n1, OctreeNode *n2, OctreeNode *n3, OctreeNode *n4,
@@ -1032,34 +1035,30 @@ void DualGridGenerator::node_proc(OctreeNode *node) {
 	vert_proc(children[0], children[1], children[2], children[3], children[4], children[5], children[6], children[7]);
 }
 
-inline Vector3 interpolate(
-		const Vector3 &v0, const Vector3 &v1, const HermiteValue &val0, const HermiteValue &val1, Vector3 &out_normal) {
+inline Vector3f interpolate(const Vector3f &v0, const Vector3f &v1, const HermiteValue &val0, const HermiteValue &val1,
+		Vector3f &out_normal) {
 	if (Math::abs(val0.sdf - SURFACE_ISO_LEVEL) <= FLT_EPSILON) {
-		out_normal = val0.gradient;
-		out_normal.normalize();
+		out_normal = math::normalized(val0.gradient);
 		return v0;
 	}
 
 	if (Math::abs(val1.sdf - SURFACE_ISO_LEVEL) <= FLT_EPSILON) {
-		out_normal = val1.gradient;
-		out_normal.normalize();
+		out_normal = math::normalized(val1.gradient);
 		return v1;
 	}
 
 	if (Math::abs(val1.sdf - val0.sdf) <= FLT_EPSILON) {
-		out_normal = val0.gradient;
-		out_normal.normalize();
+		out_normal = math::normalized(val0.gradient);
 		return v0;
 	}
 
 	float mu = (SURFACE_ISO_LEVEL - val0.sdf) / (val1.sdf - val0.sdf);
-	out_normal = val0.gradient + mu * (val1.gradient - val0.gradient);
-	out_normal.normalize();
+	out_normal = math::normalized(val0.gradient + mu * (val1.gradient - val0.gradient));
 
 	return v0 + mu * (v1 - v0);
 }
 
-void polygonize_cell_marching_squares(const Vector3 *cube_corners, const HermiteValue *cube_values, float max_distance,
+void polygonize_cell_marching_squares(const Vector3f *cube_corners, const HermiteValue *cube_values, float max_distance,
 		MeshBuilder &mesh_builder, const int *corner_map) {
 	// Note:
 	// Using Ogre's implementation directly resulted in inverted result, because it expects density values instead of
@@ -1086,8 +1085,8 @@ void polygonize_cell_marching_squares(const Vector3 *cube_corners, const Hermite
 	int edge = MarchingCubes::ms_edges[square_index];
 
 	// Find the intersection vertices.
-	Vector3 intersection_points[8];
-	Vector3 intersection_normals[8];
+	Vector3f intersection_points[8];
+	Vector3f intersection_normals[8];
 
 	intersection_points[0] = cube_corners[corner_map[0]];
 	intersection_points[2] = cube_corners[corner_map[1]];
@@ -1097,16 +1096,16 @@ void polygonize_cell_marching_squares(const Vector3 *cube_corners, const Hermite
 	HermiteValue inner_val;
 
 	inner_val = values[0]; // mSrc->getValueAndGradient(intersection_points[0]);
-	intersection_normals[0] = inner_val.gradient.normalized(); // * (inner_val.value + 1.0);
+	intersection_normals[0] = math::normalized(inner_val.gradient); // * (inner_val.value + 1.0);
 
 	inner_val = values[1]; // mSrc->getValueAndGradient(intersection_points[2]);
-	intersection_normals[2] = inner_val.gradient.normalized(); // * (inner_val.value + 1.0);
+	intersection_normals[2] = math::normalized(inner_val.gradient); // * (inner_val.value + 1.0);
 
 	inner_val = values[2]; // mSrc->getValueAndGradient(intersection_points[4]);
-	intersection_normals[4] = inner_val.gradient.normalized(); // * (inner_val.value + 1.0);
+	intersection_normals[4] = math::normalized(inner_val.gradient); // * (inner_val.value + 1.0);
 
 	inner_val = values[3]; // mSrc->getValueAndGradient(intersection_points[6]);
-	intersection_normals[6] = inner_val.gradient.normalized(); // * (inner_val.value + 1.0);
+	intersection_normals[6] = math::normalized(inner_val.gradient); // * (inner_val.value + 1.0);
 
 	if (edge & 1) {
 		intersection_points[1] = interpolate(cube_corners[corner_map[0]], cube_corners[corner_map[1]], values[0],
@@ -1161,8 +1160,8 @@ static const int g_corner_map_bottom[4] = { 3, 2, 1, 0 };
 
 } // namespace MarchingSquares
 
-void add_marching_squares_skirts(const Vector3 *corners, const HermiteValue *values, MeshBuilder &mesh_builder,
-		Vector3 min_pos, Vector3 max_pos) {
+void add_marching_squares_skirts(const Vector3f *corners, const HermiteValue *values, MeshBuilder &mesh_builder,
+		Vector3f min_pos, Vector3f max_pos) {
 	float max_distance = 0.2f; // Max distance to the isosurface
 
 	if (corners[0].z == min_pos.z) {
@@ -1191,7 +1190,7 @@ void add_marching_squares_skirts(const Vector3 *corners, const HermiteValue *val
 	}
 }
 
-void polygonize_cell_marching_cubes(const Vector3 *corners, const HermiteValue *values, MeshBuilder &mesh_builder) {
+void polygonize_cell_marching_cubes(const Vector3f *corners, const HermiteValue *values, MeshBuilder &mesh_builder) {
 	unsigned char case_index = 0;
 
 	for (int i = 0; i < 8; ++i) {
@@ -1208,8 +1207,8 @@ void polygonize_cell_marching_cubes(const Vector3 *corners, const HermiteValue *
 	}
 
 	// Find the intersection vertices
-	Vector3 intersection_points[12];
-	Vector3 intersection_normals[12];
+	Vector3f intersection_points[12];
+	Vector3f intersection_normals[12];
 	if (edge & 1) {
 		intersection_points[0] = interpolate(corners[0], corners[1], values[0], values[1], intersection_normals[0]);
 	}
@@ -1264,7 +1263,7 @@ void polygonize_cell_marching_cubes(const Vector3 *corners, const HermiteValue *
 
 void polygonize_dual_cell(
 		const DualCell &cell, const VoxelAccess &voxels, MeshBuilder &mesh_builder, bool skirts_enabled) {
-	const Vector3 *corners = cell.corners;
+	const Vector3f *corners = cell.corners;
 	HermiteValue values[8];
 
 	if (cell.has_values) {
@@ -1279,7 +1278,7 @@ void polygonize_dual_cell(
 
 	if (skirts_enabled) {
 		add_marching_squares_skirts(
-				corners, values, mesh_builder, Vector3(), (voxels.buffer.get_size() + voxels.offset));
+				corners, values, mesh_builder, Vector3f(), to_vec3f(voxels.buffer.get_size() + voxels.offset));
 	}
 }
 
@@ -1292,14 +1291,14 @@ inline void polygonize_dual_grid(
 
 void polygonize_volume_directly(const VoxelBufferInternal &voxels, Vector3i min, Vector3i size,
 		MeshBuilder &mesh_builder, bool skirts_enabled) {
-	Vector3 corners[8];
+	Vector3f corners[8];
 	HermiteValue values[8];
 
 	const Vector3i max = min + size;
-	const Vector3 minf = min;
+	const Vector3f minf = to_vec3f(min);
 
-	const Vector3 min_vertex_pos = Vector3();
-	const Vector3 max_vertex_pos = voxels.get_size() - 2 * min;
+	const Vector3f min_vertex_pos = Vector3f();
+	const Vector3f max_vertex_pos = to_vec3f(voxels.get_size() - 2 * min);
 
 	for (int z = min.z; z < max.z; ++z) {
 		for (int x = min.x; x < max.x; ++x) {
@@ -1313,14 +1312,14 @@ void polygonize_volume_directly(const VoxelBufferInternal &voxels, Vector3i min,
 				values[6] = get_hermite_value(voxels, x + 1, y + 1, z + 1);
 				values[7] = get_hermite_value(voxels, x, y + 1, z + 1);
 
-				corners[0] = Vector3(x, y, z);
-				corners[1] = Vector3(x + 1, y, z);
-				corners[2] = Vector3(x + 1, y, z + 1);
-				corners[3] = Vector3(x, y, z + 1);
-				corners[4] = Vector3(x, y + 1, z);
-				corners[5] = Vector3(x + 1, y + 1, z);
-				corners[6] = Vector3(x + 1, y + 1, z + 1);
-				corners[7] = Vector3(x, y + 1, z + 1);
+				corners[0] = Vector3f(x, y, z);
+				corners[1] = Vector3f(x + 1, y, z);
+				corners[2] = Vector3f(x + 1, y, z + 1);
+				corners[3] = Vector3f(x, y, z + 1);
+				corners[4] = Vector3f(x, y + 1, z);
+				corners[5] = Vector3f(x + 1, y + 1, z);
+				corners[6] = Vector3f(x + 1, y + 1, z + 1);
+				corners[7] = Vector3f(x, y + 1, z + 1);
 
 				for (int i = 0; i < 8; ++i) {
 					corners[i] -= minf;
@@ -1472,7 +1471,7 @@ void VoxelMesherDMC::build(VoxelMesher::Output &output, const VoxelMesher::Input
 
 	if (root != nullptr) {
 		if (params.mesh_mode == MESH_DEBUG_OCTREE) {
-			surface = dmc::generate_debug_octree_mesh(root, 1 << input.lod);
+			surface = dmc::generate_debug_octree_mesh(root, 1 << input.lod_index);
 
 		} else {
 			time_before = Time::get_singleton()->get_ticks_usec();
@@ -1484,7 +1483,7 @@ void VoxelMesherDMC::build(VoxelMesher::Output &output, const VoxelMesher::Input
 			stats.dualgrid_derivation_time = Time::get_singleton()->get_ticks_usec() - time_before;
 
 			if (params.mesh_mode == MESH_DEBUG_DUAL_GRID) {
-				surface = dmc::generate_debug_dual_grid_mesh(cache.dual_grid, 1 << input.lod);
+				surface = dmc::generate_debug_dual_grid_mesh(cache.dual_grid, 1 << input.lod_index);
 
 			} else {
 				time_before = Time::get_singleton()->get_ticks_usec();
@@ -1508,15 +1507,18 @@ void VoxelMesherDMC::build(VoxelMesher::Output &output, const VoxelMesher::Input
 
 	if (surface.is_empty()) {
 		time_before = Time::get_singleton()->get_ticks_usec();
-		if (input.lod > 0) {
-			cache.mesh_builder.scale(1 << input.lod);
+		if (input.lod_index > 0) {
+			cache.mesh_builder.scale(1 << input.lod_index);
 		}
 		surface = cache.mesh_builder.commit(params.mesh_mode == MESH_WIREFRAME);
 		stats.commit_time = Time::get_singleton()->get_ticks_usec() - time_before;
 	}
 
 	// surfaces[material][array_type], for now single material
-	output.surfaces.push_back(surface);
+	Output::Surface output_surface;
+	output_surface.arrays = surface;
+	output_surface.material_index = 0;
+	output.surfaces.push_back(output_surface);
 
 	if (params.mesh_mode == MESH_NORMAL) {
 		output.primitive_type = Mesh::PRIMITIVE_TRIANGLES;

@@ -1,53 +1,26 @@
 #ifndef VOXEL_MESH_MAP_H
 #define VOXEL_MESH_MAP_H
 
-#include "voxel_mesh_block.h"
+#include "../engine/voxel_engine.h"
+#include "../util/macros.h"
+
+#include <unordered_map>
 #include <vector>
 
 namespace zylann::voxel {
 
 // Stores meshes and colliders in an infinite sparse grid of chunks (aka blocks).
+template <typename MeshBlock_T>
 class VoxelMeshMap {
 public:
-	// Converts voxel coodinates into block coordinates.
-	// Don't use division because it introduces an offset in negative coordinates.
-	static inline Vector3i voxel_to_block_b(Vector3i pos, int block_size_pow2) {
-		return pos >> block_size_pow2;
-	}
+	VoxelMeshMap() : _last_accessed_block(nullptr) {}
 
-	inline Vector3i voxel_to_block(Vector3i pos) const {
-		return voxel_to_block_b(pos, _block_size_pow2);
+	~VoxelMeshMap() {
+		clear();
 	}
-
-	inline Vector3i to_local(Vector3i pos) const {
-		return Vector3i(pos.x & _block_size_mask, pos.y & _block_size_mask, pos.z & _block_size_mask);
-	}
-
-	// Converts block coodinates into voxel coordinates
-	inline Vector3i block_to_voxel(Vector3i bpos) const {
-		return bpos * _block_size;
-	}
-
-	VoxelMeshMap();
-	~VoxelMeshMap();
-
-	void create(unsigned int block_size_po2, int lod_index);
-
-	inline unsigned int get_block_size() const {
-		return _block_size;
-	}
-	inline unsigned int get_block_size_pow2() const {
-		return _block_size_pow2;
-	}
-	inline unsigned int get_block_size_mask() const {
-		return _block_size_mask;
-	}
-
-	void set_lod_index(int lod_index);
-	unsigned int get_lod_index() const;
 
 	struct NoAction {
-		inline void operator()(VoxelMeshBlock *block) {}
+		inline void operator()(MeshBlock_T &block) {}
 	};
 
 	template <typename Action_T>
@@ -55,72 +28,176 @@ public:
 		if (_last_accessed_block && _last_accessed_block->position == bpos) {
 			_last_accessed_block = nullptr;
 		}
-		unsigned int *iptr = _blocks_map.getptr(bpos);
-		if (iptr != nullptr) {
-			const unsigned int i = *iptr;
+		auto it = _blocks_map.find(bpos);
+		if (it != _blocks_map.end()) {
+			const unsigned int i = it->second.index;
 #ifdef DEBUG_ENABLED
 			CRASH_COND(i >= _blocks.size());
 #endif
-			VoxelMeshBlock *block = _blocks[i];
+			MeshBlock_T *block = _blocks[i];
 			ERR_FAIL_COND(block == nullptr);
-			pre_delete(block);
+			pre_delete(*block);
 			queue_free_mesh_block(block);
-			remove_block_internal(bpos, i);
+			remove_block_internal(it, i);
 		}
 	}
 
-	VoxelMeshBlock *get_block(Vector3i bpos);
-	const VoxelMeshBlock *get_block(Vector3i bpos) const;
+	MeshBlock_T *get_block(Vector3i bpos) {
+		if (_last_accessed_block && _last_accessed_block->position == bpos) {
+			return _last_accessed_block;
+		}
+		auto it = _blocks_map.find(bpos);
+		if (it != _blocks_map.end()) {
+#ifdef DEBUG_ENABLED
+			const unsigned int i = it->second.index;
+			CRASH_COND(i >= _blocks.size());
+			MeshBlock_T *block = _blocks[i];
+			CRASH_COND(block == nullptr); // The map should not contain null blocks
+			CRASH_COND(it->second.block == nullptr);
+#endif
+			_last_accessed_block = it->second.block;
+			return _last_accessed_block;
+		}
+		return nullptr;
+	}
 
-	void set_block(Vector3i bpos, VoxelMeshBlock *block);
+	const MeshBlock_T *get_block(Vector3i bpos) const {
+		if (_last_accessed_block != nullptr && _last_accessed_block->position == bpos) {
+			return _last_accessed_block;
+		}
+		auto it = _blocks_map.find(bpos);
+		if (it != _blocks_map.end()) {
+#ifdef DEBUG_ENABLED
+			const unsigned int i = it->second.index;
+			CRASH_COND(i >= _blocks.size());
+			MeshBlock_T *block = _blocks[i];
+			CRASH_COND(block == nullptr); // The map should not contain null blocks
+			CRASH_COND(it->second.block == nullptr);
+#endif
+			// This function can't cache _last_accessed_block, because it's const, so repeated accesses are hashing
+			// again...
+			return it->second.block;
+		}
+		return nullptr;
+	}
 
-	bool has_block(Vector3i pos) const;
-	bool is_block_surrounded(Vector3i pos) const;
+	void set_block(Vector3i bpos, MeshBlock_T *block) {
+		ERR_FAIL_COND(block == nullptr);
+		CRASH_COND(bpos != block->position);
+		if (_last_accessed_block == nullptr || _last_accessed_block->position == bpos) {
+			_last_accessed_block = block;
+		}
+#ifdef DEBUG_ENABLED
+		CRASH_COND(has_block(bpos));
+#endif
+		unsigned int i = _blocks.size();
+		_blocks.push_back(block);
+		_blocks_map.insert({ bpos, { block, i } });
+	}
 
-	void clear();
+	bool has_block(Vector3i pos) const {
+		//(_last_accessed_block != nullptr && _last_accessed_block->pos == pos) ||
+		return _blocks_map.find(pos) != _blocks_map.end();
+	}
 
-	int get_block_count() const;
-
-	// TODO Rename for_each_block
-	template <typename Op_T>
-	inline void for_all_blocks(Op_T op) {
+	void clear() {
 		for (auto it = _blocks.begin(); it != _blocks.end(); ++it) {
-			op(*it);
+			MeshBlock_T *block = *it;
+			if (block == nullptr) {
+				ERR_PRINT("Unexpected nullptr in VoxelMap::clear()");
+			} else {
+				memdelete(block);
+			}
+		}
+		_blocks.clear();
+		_blocks_map.clear();
+		_last_accessed_block = nullptr;
+	}
+
+	unsigned int get_block_count() const {
+#ifdef DEBUG_ENABLED
+		const unsigned int blocks_map_size = _blocks_map.size();
+		CRASH_COND(_blocks.size() != blocks_map_size);
+#endif
+		return _blocks.size();
+	}
+
+	template <typename Op_T>
+	inline void for_each_block(Op_T op) {
+		for (auto it = _blocks.begin(); it != _blocks.end(); ++it) {
+			MeshBlock_T *block = *it;
+#ifdef DEBUG_ENABLED
+			CRASH_COND(block == nullptr);
+#endif
+			op(*block);
 		}
 	}
 
-	// TODO Rename for_each_block
 	template <typename Op_T>
-	inline void for_all_blocks(Op_T op) const {
+	inline void for_each_block(Op_T op) const {
 		for (auto it = _blocks.begin(); it != _blocks.end(); ++it) {
-			op(*it);
+			const MeshBlock_T *block = *it;
+#ifdef DEBUG_ENABLED
+			CRASH_COND(block == nullptr);
+#endif
+			op(*block);
 		}
 	}
 
 private:
-	//VoxelMeshBlock *get_or_create_block_at_voxel_pos(Vector3i pos);
-	VoxelMeshBlock *create_default_block(Vector3i bpos);
-	void remove_block_internal(Vector3i bpos, unsigned int index);
-	void queue_free_mesh_block(VoxelMeshBlock *block);
+	struct MapItem {
+		MeshBlock_T *block;
+		// Index of the block within the vector storage
+		unsigned int index;
+	};
 
-	void set_block_size_pow2(unsigned int p);
+	void remove_block_internal(typename std::unordered_map<Vector3i, MapItem>::iterator rm_it, unsigned int index) {
+		// TODO `erase` can occasionally be very slow (milliseconds) if the map contains lots of items.
+		// This might be caused by internal rehashing/resizing.
+		// We should look for a faster container, or reduce the number of entries.
+
+		// This function assumes the block is already freed
+		_blocks_map.erase(rm_it);
+
+		MeshBlock_T *moved_block = _blocks.back();
+#ifdef DEBUG_ENABLED
+		CRASH_COND(index >= _blocks.size());
+#endif
+		_blocks[index] = moved_block;
+		_blocks.pop_back();
+
+		if (index < _blocks.size()) {
+			auto moved_block_index_it = _blocks_map.find(moved_block->position);
+			CRASH_COND(moved_block_index_it == _blocks_map.end());
+			moved_block_index_it->second.index = index;
+		}
+	}
+
+	static void queue_free_mesh_block(MeshBlock_T *block) {
+		// We spread this out because of physics
+		// TODO Could it be enough to do both render and physic deallocation with the task in ~MeshBlock_T()?
+		struct FreeMeshBlockTask : public zylann::ITimeSpreadTask {
+			void run(TimeSpreadTaskContext &ctx) override {
+				memdelete(block);
+			}
+			MeshBlock_T *block = nullptr;
+		};
+		ERR_FAIL_COND(block == nullptr);
+		FreeMeshBlockTask *task = memnew(FreeMeshBlockTask);
+		task->block = block;
+		VoxelEngine::get_singleton().push_main_thread_time_spread_task(task);
+	}
 
 private:
 	// Blocks stored with a spatial hash in all 3D directions.
-	// RELATIONSHIP = 2 because it delivers better performance with this kind of key and hash (less collisions).
-	HashMap<Vector3i, unsigned int, Vector3iHasher, HashMapComparatorDefault<Vector3i>, 3, 2> _blocks_map;
-	// Blocks are stored in a vector to allow faster iteration over all of them
-	std::vector<VoxelMeshBlock *> _blocks;
+	std::unordered_map<Vector3i, MapItem> _blocks_map;
+	// Blocks are stored in a vector to allow faster iteration over all of them.
+	// Use cases for this include updating the transform of the meshes
+	std::vector<MeshBlock_T *> _blocks;
 
 	// Voxel access will most frequently be in contiguous areas, so the same blocks are accessed.
 	// To prevent too much hashing, this reference is checked before.
-	mutable VoxelMeshBlock *_last_accessed_block;
-
-	unsigned int _block_size;
-	unsigned int _block_size_pow2;
-	unsigned int _block_size_mask;
-
-	unsigned int _lod_index = 0;
+	mutable MeshBlock_T *_last_accessed_block;
 };
 
 } // namespace zylann::voxel

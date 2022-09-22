@@ -1,8 +1,9 @@
-#ifndef BOX3I_H
-#define BOX3I_H
+#ifndef ZYLANN_BOX3I_H
+#define ZYLANN_BOX3I_H
 
 #include "vector3i.h"
-#include <core/variant/variant.h>
+#include <iosfwd>
+#include <vector>
 
 namespace zylann {
 
@@ -68,10 +69,6 @@ public:
 				other_end.x <= end.x && //
 				other_end.y <= end.y && //
 				other_end.z <= end.z;
-	}
-
-	String to_string() const {
-		return String("(o:{0}, s:{1})").format(varray(pos, size));
 	}
 
 	bool intersects(const Box3i &other) const {
@@ -214,7 +211,9 @@ public:
 		}
 	}
 
-	inline void difference(const Box3i &b, std::vector<Box3i> &output) {
+	// Subtracts another box from the current box.
+	// If any, boxes composing the remaining volume are added to the given vector.
+	inline void difference_to_vec(const Box3i &b, std::vector<Box3i> &output) const {
 		difference(b, [&output](const Box3i &sub_box) { output.push_back(sub_box); });
 	}
 
@@ -275,9 +274,9 @@ public:
 	// rounding outwards of the area covered by the original rectangle if divided coordinates have remainders.
 	inline Box3i downscaled(int step_size) const {
 		Box3i o;
-		o.pos = Vector3iUtil::floordiv(pos, step_size);
+		o.pos = math::floordiv(pos, step_size);
 		// TODO Is that ceildiv?
-		Vector3i max_pos = Vector3iUtil::floordiv(pos + size - Vector3i(1, 1, 1), step_size);
+		Vector3i max_pos = math::floordiv(pos + size - Vector3i(1, 1, 1), step_size);
 		o.size = max_pos - o.pos + Vector3i(1, 1, 1);
 		return o;
 	}
@@ -287,8 +286,7 @@ public:
 	// This is such that the result is included in the original rectangle (assuming a common coordinate system).
 	// The result can be an empty rectangle.
 	inline Box3i downscaled_inner(int step_size) const {
-		return Box3i::from_min_max(
-				Vector3iUtil::ceildiv(pos, step_size), Vector3iUtil::floordiv(pos + size, step_size));
+		return Box3i::from_min_max(math::ceildiv(pos, step_size), math::floordiv(pos + size, step_size));
 	}
 
 	static inline void clip_range(int &pos, int &size, int lim_pos, int lim_size) {
@@ -356,6 +354,8 @@ inline bool operator==(const Box3i &a, const Box3i &b) {
 	return a.pos == b.pos && a.size == b.size;
 }
 
+std::stringstream &operator<<(std::stringstream &ss, const Box3i &box);
+
 } // namespace zylann
 
-#endif // BOX3I_H
+#endif // ZYLANN_BOX3I_H

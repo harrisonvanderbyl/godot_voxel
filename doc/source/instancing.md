@@ -22,7 +22,7 @@ In order to spawn items, `VoxelInstancer` needs a [VoxelInstanceLibrary](api/Vox
 
 Select a `VoxelInstancer`. In the inspector, assign a library to the `library` property, or create a new embedded one. Then click on the library resource. Buttons appear at the top of the inspector:
 
-![Screenshot of the VoxelInstanceLibrary menu](images/instance_library_menu.png)
+![Screenshot of the VoxelInstanceLibrary menu](images/instance_library_menu.webp)
 
 You can add items to the library by clicking the "+" icon, and choose `Add Multimesh item`.
 
@@ -36,15 +36,15 @@ Items created this way come with a default setup, so you should be able to see s
 
 The range at which items spawn is based on the LOD system of the voxel terrain itself. This is configured in the `lod_index` property of [VoxelInstanceLibraryItem](api/VoxelInstanceLibraryItem.md). For example, choosing `0` will make the item spawn at the closest range, and fade quickly in the distance. Higher indexes will spawn on a larger range, so will also start to appear earlier as the player gets closer. Instances spawn in the same "blocks" as the ground.
 
-![Screenshot showing the effect of lod_index on the range of instances](images/instances_lod_index.png)
+![Screenshot showing the effect of lod_index on the range of instances](images/instances_lod_index.webp)
 
 Usually landscapes may be composed of multiple layers so that the closer you get, the more details come in. Bigger items use high lod indexes to be seen from far away, while smaller items may use lower indexes.
 
-![Screenshot of landscape using layers of instances](images/landscape_with_instances.png)
+![Screenshot of landscape using layers of instances](images/landscape_with_instances.webp)
 
 There is a balance to consider when choosing the appropriate `lod_index`: currently, larger indexes are *much more imprecise*, because they work on top of a lower-resolution mesh. When getting closer, it's possible that such instances are seen floating above ground, or sinking into it. This mostly happens in areas with sharp changes such as ridges, crevices or caves:
 
-![Screemshot of misaligned instances](images/misaligned_instances.png)
+![Screemshot of misaligned instances](images/misaligned_instances.webp)
 
 To combat this, you can adjust the `offset_along_normal` parameter in the `generator` associated to the item. This depends on the asset, so designing them such that they can have part of their bottom sunk into the ground can give some margin of error.
 
@@ -64,13 +64,13 @@ A secondary LOD system is included, which applies to meshes themselves, to some 
 
 To use this, you have to fill the 3 mesh LOD properties on your `VoxelInstanceLibraryItem`:
 
-![Screenshot of mesh LOD properties](images/mesh_lod_properties.png)
+![Screenshot of mesh LOD properties](images/mesh_lod_properties.webp)
 
 If only the `mesh` property is set, no LOD will be used.
 
-The distance at which a LOD will be chosen is currently hardcoded, because it depends on the `lod_index` the blocks for that item are loaded into, which in turn depends on the `split_scale` property of the parent voxel terrain.
+The distance at which a LOD will be chosen is currently hardcoded, because it depends on the `lod_index` the blocks for that item are loaded into, which in turn depends on the `lod_distance` property of the parent voxel terrain.
 
-![Screenshot of mesh LODs with colors](images/mesh_lods.png)
+![Screenshot of mesh LODs with colors](images/mesh_lods.webp)
 
 If you need fewer LODs, you can assign twice the same mesh. This system is quite rigid because in Godot 4 it might be changed to only have a single slot dedicated to impostor meshes. Indeed, Godot 4 might support LOD on meshes, but it is not planned for the last LODs to become impostors, so this should still be possible to achieve.
 
@@ -98,9 +98,14 @@ The save format is described in [this document](specs/instances_format.md).
 
 ### Setting up a Multimesh item from a scene
 
-It is possible to setup a Multimesh Item from an existing scene, as an alternative to setting it up in the inspector. One reason you could need this is to setup colliders, because although they are supported, it is not possible to set them in the inspector at the moment. It is also more convenient to design instances in the 3D editor using nodes.
+It is possible to setup a Multimesh Item from an existing scene, as an alternative to setting it up in the inspector. The scene will be converted to fit multimesh rendering. One reason you could need this is to setup colliders, because although they are supported, it is not possible to set them in the inspector at the moment. It is also more convenient to design instances in the 3D editor using nodes.
 
-This conversion process expects your scene to follow a specific structure:
+There are two ways of setting up from a scene:
+
+- Assign the `scene` property. This will convert the scene at runtime. The scene will be linked to the item, so it will stay updated if the scene changes.
+- Use the `Setup from scene` button on top of the inspector. This does not link the scene, and rather assigns manual properties doing the conversion in the editor. The item will not update if the scene change. If the scene embeds meshes, materials or textures, they might end up being copied into the item's resource file.
+
+The conversion process expects your scene to follow a specific structure:
 
 ```
 - PhysicsBody (StaticBody, RigidBody...)
@@ -122,9 +127,9 @@ Surface material properties on the `MeshInstance` node are not supported.
 
 ### Scene instances
 
-Multimesh items are fast and efficient, but are quite limited.
+Multimesh items are fast and efficient, but have limitations.
 
-Instancing scenes is supported by adding items of type `VoxelInstanceLibrarySceneItem`. Instead of spawning multimeshes, regular scene instances will be created as child of `VoxelInstancer`. The advantage is the ability to put much more varied behavior on them, such as scripts, sounds, animations, or even further spawning logic or interaction. The only constraint is, the root of the scene must be `Spatial` or derive from it.
+Instancing scenes is supported by adding items of type `VoxelInstanceLibrarySceneItem`. Instead of spawning multimeshes, regular scene instances will be created as child of `VoxelInstancer`. The advantage is the ability to put much more varied behavior on them, such as scripts, sounds, animations, or even further spawning logic or interaction. The only constraint is, the root of the scene must be `Node3D` or derive from it.
 
 This freedom has a high price compared to multimesh instances. Adding many instances can become slow quickly, so the default density of these items is lower when you create them from the editor. It is strongly recommended to not use too complex scenes, because depending on the settings, it can lead to a freeze or crash of Godot if your computer cannot handle too many instances.
 
@@ -137,7 +142,7 @@ Procedural generation
 
 ### Built-in generator
 
-![Screenshot of a layer of instances using noise](images/instances_procgen.png)
+![Screenshot of a layer of instances using noise](images/instances_procgen.webp)
 
 Items are added with a default built-in generator, so they will already spawn based on procedural rules rather than being painted manually. You can tweak the generator by inspecting the `generator` property of [VoxelInstanceLibraryItem](api/VoxelInstanceLibraryItem.md).
 

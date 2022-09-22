@@ -1,7 +1,9 @@
-*.obj
-*.pyc
-*.o
 *.autosave
 *.bc
 *.d
 *.log
+*.o
+*.obj
+*.pyc
+*.tmp
+.DS_Store

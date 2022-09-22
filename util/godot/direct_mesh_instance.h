@@ -13,6 +13,7 @@ namespace zylann {
 class DirectMeshInstance : public NonCopyable {
 public:
 	DirectMeshInstance();
+	DirectMeshInstance(DirectMeshInstance &&src);
 	~DirectMeshInstance();
 
 	bool is_valid() const;
@@ -24,7 +25,7 @@ public:
 	void set_material_override(Ref<Material> material);
 	void set_visible(bool visible);
 	void set_cast_shadows_setting(RenderingServer::ShadowCastingSetting mode);
-	void set_shader_instance_uniform(StringName key, Variant value);
+	void set_shader_instance_parameter(StringName key, Variant value);
 
 	// Convenience
 	enum GIMode { //
@@ -39,6 +40,8 @@ public:
 	Ref<Mesh> get_mesh() const;
 
 	// void move_to(DirectMeshInstance &dst);
+
+	void operator=(DirectMeshInstance &&src);
 
 private:
 	RID _mesh_instance;

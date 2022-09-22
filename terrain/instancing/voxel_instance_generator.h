@@ -3,7 +3,7 @@
 
 //#include "../../storage/voxel_buffer.h"
 #include "../../util/math/vector3i.h"
-#include "../../util/noise/fast_noise_lite.h"
+#include <modules/noise/noise.h>
 
 #include <limits>
 #include <vector>
@@ -102,8 +102,8 @@ public:
 	void set_random_rotation(bool enabled);
 	bool get_random_rotation() const;
 
-	void set_noise(Ref<FastNoiseLite> noise);
-	Ref<FastNoiseLite> get_noise() const;
+	void set_noise(Ref<Noise> noise);
+	Ref<Noise> get_noise() const;
 
 	void set_noise_dimension(Dimension dim);
 	Dimension get_noise_dimension() const;
@@ -112,7 +112,11 @@ public:
 	float get_noise_on_scale() const;
 
 	static inline int get_octant_index(const Vector3 pos, float half_block_size) {
-		return (pos.x > half_block_size) | ((pos.y > half_block_size) << 1) | ((pos.z > half_block_size) << 2);
+		return get_octant_index(pos.x > half_block_size, pos.y > half_block_size, pos.z > half_block_size);
+	}
+
+	static inline int get_octant_index(bool x, bool y, bool z) {
+		return int(x) | (int(y) << 1) | (int(z) << 2);
 	}
 
 private:
@@ -133,7 +137,7 @@ private:
 	bool _random_rotation = true;
 	EmitMode _emit_mode = EMIT_FROM_VERTICES;
 	Distribution _scale_distribution = DISTRIBUTION_QUADRATIC;
-	Ref<FastNoiseLite> _noise;
+	Ref<Noise> _noise;
 	Dimension _noise_dimension = DIMENSION_3D;
 	float _noise_on_scale = 0.f;
 

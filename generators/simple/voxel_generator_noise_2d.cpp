@@ -1,6 +1,8 @@
 #include "voxel_generator_noise_2d.h"
 #include <core/config/engine.h>
 #include <core/core_string_names.h>
+#include <modules/noise/fastnoise_lite.h>
+#include <scene/resources/curve.h>
 
 namespace zylann::voxel {
 
@@ -8,7 +10,7 @@ VoxelGeneratorNoise2D::VoxelGeneratorNoise2D() {}
 
 VoxelGeneratorNoise2D::~VoxelGeneratorNoise2D() {}
 
-void VoxelGeneratorNoise2D::set_noise(Ref<OpenSimplexNoise> noise) {
+void VoxelGeneratorNoise2D::set_noise(Ref<Noise> noise) {
 	if (_noise == noise) {
 		return;
 	}
@@ -17,7 +19,7 @@ void VoxelGeneratorNoise2D::set_noise(Ref<OpenSimplexNoise> noise) {
 				callable_mp(this, &VoxelGeneratorNoise2D::_on_noise_changed));
 	}
 	_noise = noise;
-	Ref<OpenSimplexNoise> copy;
+	Ref<Noise> copy;
 	if (_noise.is_valid()) {
 		_noise->connect(CoreStringNames::get_singleton()->changed,
 				callable_mp(this, &VoxelGeneratorNoise2D::_on_noise_changed));
@@ -28,7 +30,7 @@ void VoxelGeneratorNoise2D::set_noise(Ref<OpenSimplexNoise> noise) {
 	_parameters.noise = copy;
 }
 
-Ref<OpenSimplexNoise> VoxelGeneratorNoise2D::get_noise() const {
+Ref<Noise> VoxelGeneratorNoise2D::get_noise() const {
 	return _noise;
 }
 
@@ -57,7 +59,7 @@ Ref<Curve> VoxelGeneratorNoise2D::get_curve() const {
 	return _curve;
 }
 
-VoxelGenerator::Result VoxelGeneratorNoise2D::generate_block(VoxelBlockRequest &input) {
+VoxelGenerator::Result VoxelGeneratorNoise2D::generate_block(VoxelGenerator::VoxelQueryData &input) {
 	Parameters params;
 	{
 		RWLockRead rlock(_parameters_lock);
@@ -67,7 +69,7 @@ VoxelGenerator::Result VoxelGeneratorNoise2D::generate_block(VoxelBlockRequest &
 	Result result;
 
 	ERR_FAIL_COND_V(params.noise.is_null(), result);
-	OpenSimplexNoise &noise = **params.noise;
+	Noise &noise = **params.noise;
 
 	VoxelBufferInternal &out_buffer = input.voxel_buffer;
 
@@ -79,13 +81,42 @@ VoxelGenerator::Result VoxelGeneratorNoise2D::generate_block(VoxelBlockRequest &
 		Curve &curve = **params.curve;
 		result = VoxelGeneratorHeightmap::generate(
 				out_buffer,
-				[&noise, &curve](
-						int x, int z) { return curve.interpolate_baked(0.5 + 0.5 * noise.get_noise_2d(x, z)); },
+				[&noise, &curve](int x, int z) { return curve.sample_baked(0.5 + 0.5 * noise.get_noise_2d(x, z)); },
 				input.origin_in_voxels, input.lod);
 	}
 
 	out_buffer.compress_uniform_channels();
 	return result;
+}
+
+void VoxelGeneratorNoise2D::generate_series(Span<const float> positions_x, Span<const float> positions_y,
+		Span<const float> positions_z, unsigned int channel, Span<float> out_values, Vector3f min_pos,
+		Vector3f max_pos) {
+	Parameters params;
+	{
+		RWLockRead rlock(_parameters_lock);
+		params = _parameters;
+	}
+
+	Result result;
+
+	ERR_FAIL_COND(params.noise.is_null());
+	Noise &noise = **params.noise;
+
+	if (_curve.is_null()) {
+		generate_series_template(
+				[&noise](float x, float z) { //
+					return 0.5 + 0.5 * noise.get_noise_2d(x, z);
+				},
+				positions_x, positions_y, positions_z, channel, out_values, min_pos, max_pos);
+	} else {
+		Curve &curve = **params.curve;
+		generate_series_template(
+				[&noise, &curve](float x, float z) { //
+					return curve.sample_baked(0.5 + 0.5 * noise.get_noise_2d(x, z));
+				},
+				positions_x, positions_y, positions_z, channel, out_values, min_pos, max_pos);
+	}
 }
 
 void VoxelGeneratorNoise2D::_on_noise_changed() {
@@ -111,7 +142,7 @@ void VoxelGeneratorNoise2D::_bind_methods() {
 	// ClassDB::bind_method(D_METHOD("_on_noise_changed"), &VoxelGeneratorNoise2D::_on_noise_changed);
 	// ClassDB::bind_method(D_METHOD("_on_curve_changed"), &VoxelGeneratorNoise2D::_on_curve_changed);
 
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "noise", PROPERTY_HINT_RESOURCE_TYPE, "OpenSimplexNoise",
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "noise", PROPERTY_HINT_RESOURCE_TYPE, FastNoiseLite::get_class_static(),
 						 PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_EDITOR_INSTANTIATE_OBJECT),
 			"set_noise", "get_noise");
 	ADD_PROPERTY(

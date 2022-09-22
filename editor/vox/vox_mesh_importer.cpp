@@ -3,8 +3,11 @@
 #include "../../meshers/cubes/voxel_mesher_cubes.h"
 #include "../../storage/voxel_buffer_internal.h"
 #include "../../storage/voxel_memory_pool.h"
-#include "../../streams/vox_data.h"
+#include "../../streams/vox/vox_data.h"
+#include "../../util/dstack.h"
 #include "../../util/macros.h"
+#include "../../util/math/conv.h"
+#include "../../util/memory.h"
 #include "../../util/profiling.h"
 #include "vox_import_funcs.h"
 
@@ -47,15 +50,15 @@ float VoxelVoxMeshImporter::get_priority() const {
 // }
 
 void VoxelVoxMeshImporter::get_import_options(const String &p_path, List<ImportOption> *r_options, int p_preset) const {
-	VoxelStringNames *sn = VoxelStringNames::get_singleton();
-	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn->store_colors_in_texture), false));
-	r_options->push_back(ImportOption(PropertyInfo(Variant::FLOAT, sn->scale), 1.f));
+	const VoxelStringNames &sn = VoxelStringNames::get_singleton();
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, sn.store_colors_in_texture), false));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::FLOAT, sn.scale), 1.f));
 	r_options->push_back(ImportOption(
-			PropertyInfo(Variant::INT, sn->pivot_mode, PROPERTY_HINT_ENUM, "LowerCorner,SceneOrigin,Center"), 1));
+			PropertyInfo(Variant::INT, sn.pivot_mode, PROPERTY_HINT_ENUM, "LowerCorner,SceneOrigin,Center"), 1));
 }
 
 bool VoxelVoxMeshImporter::get_option_visibility(
-		const String &p_path, const String &p_option, const Map<StringName, Variant> &p_options) const {
+		const String &p_path, const String &p_option, const HashMap<StringName, Variant> &p_options) const {
 	return true;
 }
 
@@ -93,7 +96,7 @@ Error for_each_model_instance_in_scene_graph(const Data &data, int node_id, Tran
 			const ShapeNode *vox_shape_node = reinterpret_cast<const ShapeNode *>(vox_node);
 			ForEachModelInstanceArgs args;
 			args.model = &data.get_model(vox_shape_node->model_id);
-			args.position = Vector3iUtil::from_rounded(transform.origin);
+			args.position = math::round_to_int(transform.origin);
 			args.basis = transform.basis;
 			f(args);
 		} break;
@@ -128,12 +131,13 @@ void for_each_model_instance(const Data &vox_data, F f) {
 
 struct ModelInstance {
 	// Model with baked rotation
-	std::unique_ptr<VoxelBufferInternal> voxels;
+	UniquePtr<VoxelBufferInternal> voxels;
 	// Lowest corner position
 	Vector3i position;
 };
 
 void extract_model_instances(const Data &vox_data, std::vector<ModelInstance> &out_instances) {
+	ZN_DSTACK();
 	// Gather all models and bake their rotations
 	for_each_model_instance(vox_data, [&out_instances](ForEachModelInstanceArgs args) {
 		ERR_FAIL_COND(args.model == nullptr);
@@ -150,9 +154,9 @@ void extract_model_instances(const Data &vox_data, std::vector<ModelInstance> &o
 			src_color_indices = to_span_const(model.color_indexes);
 		} else {
 			IntBasis basis;
-			basis.x = Vector3iUtil::from_cast(args.basis.get_axis(Vector3::AXIS_X));
-			basis.y = Vector3iUtil::from_cast(args.basis.get_axis(Vector3::AXIS_Y));
-			basis.z = Vector3iUtil::from_cast(args.basis.get_axis(Vector3::AXIS_Z));
+			basis.x = to_vec3i(args.basis.get_column(Vector3::AXIS_X));
+			basis.y = to_vec3i(args.basis.get_column(Vector3::AXIS_Y));
+			basis.z = to_vec3i(args.basis.get_column(Vector3::AXIS_Z));
 			temp_voxels.resize(model.color_indexes.size());
 			dst_size =
 					transform_3d_array_zxy(to_span_const(model.color_indexes), to_span(temp_voxels), model.size, basis);
@@ -162,7 +166,7 @@ void extract_model_instances(const Data &vox_data, std::vector<ModelInstance> &o
 		// TODO Optimization: implement transformation for VoxelBuffers so we can avoid using a temporary copy.
 		// Didn't do it yet because VoxelBuffers also have metadata and the `transform_3d_array_zxy` function only works
 		// on arrays.
-		std::unique_ptr<VoxelBufferInternal> voxels = std::make_unique<VoxelBufferInternal>();
+		UniquePtr<VoxelBufferInternal> voxels = make_unique_instance<VoxelBufferInternal>();
 		voxels->create(dst_size);
 		voxels->decompress_channel(VoxelBufferInternal::CHANNEL_COLOR);
 
@@ -195,7 +199,7 @@ bool make_single_voxel_grid(
 	const size_t volume = Vector3iUtil::get_volume(bounding_box.size);
 	ERR_FAIL_COND_V_MSG(volume > limit, false,
 			String("Vox data is too big to be meshed as a single mesh ({0}: {0} bytes)")
-					.format(varray(bounding_box.size, SIZE_T_TO_VARIANT(volume))));
+					.format(varray(bounding_box.size, ZN_SIZE_T_TO_VARIANT(volume))));
 
 	out_voxels.create(bounding_box.size + Vector3iUtil::create(VoxelMesherCubes::PADDING * 2));
 	out_voxels.set_channel_depth(VoxelBufferInternal::CHANNEL_COLOR, VoxelBufferInternal::DEPTH_8_BIT);
@@ -214,12 +218,12 @@ bool make_single_voxel_grid(
 }
 
 Error VoxelVoxMeshImporter::import(const String &p_source_file, const String &p_save_path,
-		const Map<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files,
+		const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files,
 		Variant *r_metadata) {
 	//
-	const bool p_store_colors_in_textures = p_options[VoxelStringNames::get_singleton()->store_colors_in_texture];
-	const float p_scale = p_options[VoxelStringNames::get_singleton()->scale];
-	const int p_pivot_mode = p_options[VoxelStringNames::get_singleton()->pivot_mode];
+	const bool p_store_colors_in_textures = p_options[VoxelStringNames::get_singleton().store_colors_in_texture];
+	const float p_scale = p_options[VoxelStringNames::get_singleton().scale];
+	const int p_pivot_mode = p_options[VoxelStringNames::get_singleton().pivot_mode];
 
 	ERR_FAIL_INDEX_V(p_pivot_mode, PIVOT_MODES_COUNT, ERR_INVALID_PARAMETER);
 
@@ -287,7 +291,7 @@ Error VoxelVoxMeshImporter::import(const String &p_source_file, const String &p_
 		// Deallocate large temporary memory to free space.
 		// This is a workaround because VoxelBuffer uses this by default, however it doesn't fit the present use case.
 		// Eventually we should avoid using this pool here.
-		VoxelMemoryPool::get_singleton()->clear_unused_blocks();
+		VoxelMemoryPool::get_singleton().clear_unused_blocks();
 	}
 
 	if (mesh.is_null()) {
@@ -335,9 +339,7 @@ Error VoxelVoxMeshImporter::import(const String &p_source_file, const String &p_
 				//Ref<Texture> texture = ResourceLoader::load(atlas_path);
 				// TODO THIS IS A WORKAROUND, it is not supposed to be an ImageTexture...
 				// See earlier code, I could not find any way to reference a separate StreamTexture.
-				Ref<ImageTexture> texture;
-				texture.instantiate();
-				texture->create_from_image(atlas);
+				Ref<ImageTexture> texture = ImageTexture::create_from_image(atlas);
 				material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, texture);
 				material->set_texture_filter(StandardMaterial3D::TEXTURE_FILTER_NEAREST);
 			}
@@ -353,9 +355,9 @@ Error VoxelVoxMeshImporter::import(const String &p_source_file, const String &p_
 
 	// Save mesh
 	{
-		VOXEL_PROFILE_SCOPE();
+		ZN_PROFILE_SCOPE();
 		String mesh_save_path = String("{0}.mesh").format(varray(p_save_path));
-		const Error mesh_save_err = ResourceSaver::save(mesh_save_path, mesh);
+		const Error mesh_save_err = ResourceSaver::save(mesh, mesh_save_path);
 		ERR_FAIL_COND_V_MSG(
 				mesh_save_err != OK, mesh_save_err, String("Failed to save {0}").format(varray(mesh_save_path)));
 	}

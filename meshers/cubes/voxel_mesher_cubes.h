@@ -1,8 +1,12 @@
 #ifndef VOXEL_MESHER_CUBES_H
 #define VOXEL_MESHER_CUBES_H
 
+#include "../../util/math/vector2f.h"
+#include "../../util/math/vector3f.h"
+#include "../../util/thread/rw_lock.h"
 #include "../voxel_mesher.h"
 #include "voxel_color_palette.h"
+
 #include <vector>
 
 namespace zylann::voxel {
@@ -57,15 +61,18 @@ public:
 		return true;
 	}
 
+	void set_material_by_index(Materials id, Ref<Material> material);
+	Ref<Material> get_material_by_index(unsigned int i) const override;
+
 	// Structs
 
 	// Using std::vector because they make this mesher twice as fast than Godot Vectors.
 	// See why: https://github.com/godotengine/godot/issues/24731
 	struct Arrays {
-		std::vector<Vector3> positions;
-		std::vector<Vector3> normals;
+		std::vector<Vector3f> positions;
+		std::vector<Vector3f> normals;
 		std::vector<Color> colors;
-		std::vector<Vector2> uvs;
+		std::vector<Vector2f> uvs;
 		std::vector<int> indices;
 
 		void clear() {
@@ -94,10 +101,15 @@ public:
 		}
 	};
 
-protected:
+private:
+	void _b_set_opaque_material(Ref<Material> material);
+	Ref<Material> _b_get_opaque_material() const;
+
+	void _b_set_transparent_material(Ref<Material> material);
+	Ref<Material> _b_get_transparent_material() const;
+
 	static void _bind_methods();
 
-private:
 	struct Parameters {
 		ColorMode color_mode = COLOR_RAW;
 		Ref<VoxelColorPalette> palette;
@@ -114,6 +126,8 @@ private:
 	// Parameters
 	Parameters _parameters;
 	RWLock _parameters_lock;
+
+	FixedArray<Ref<Material>, MATERIAL_COUNT> _materials;
 
 	// Work cache
 	static thread_local Cache _cache;

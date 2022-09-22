@@ -2,6 +2,7 @@
 #define VOXEL_BLOCKY_LIBRARY_H
 
 #include "../../util/dynamic_bitset.h"
+#include "../../util/thread/rw_lock.h"
 #include "voxel_blocky_model.h"
 #include <core/object/ref_counted.h>
 
@@ -23,6 +24,8 @@ public:
 		unsigned int side_pattern_count = 0;
 		// Lots of data can get moved but it's only on load.
 		std::vector<VoxelBlockyModel::BakedData> models;
+
+		unsigned int indexed_materials_count = 0;
 
 		inline bool has_model(uint32_t i) const {
 			return i < models.size();
@@ -80,6 +83,8 @@ public:
 		return _baked_data_rw_lock;
 	}
 
+	Ref<Material> get_material_by_index(unsigned int index) const;
+
 private:
 	void set_voxel(unsigned int id, Ref<VoxelBlockyModel> voxel);
 
@@ -91,6 +96,9 @@ private:
 
 	Ref<VoxelBlockyModel> _b_get_voxel(unsigned int id);
 	Ref<VoxelBlockyModel> _b_get_voxel_by_name(StringName name);
+	// Convenience method to get all indexed materials after baking,
+	// which can be passed to VoxelMesher::build for testing
+	TypedArray<Material> _b_get_materials() const;
 
 	static void _bind_methods();
 
@@ -105,6 +113,9 @@ private:
 	// Used in multithread context by the mesher. Don't modify that outside of bake().
 	RWLock _baked_data_rw_lock;
 	BakedData _baked_data;
+	// One of the entries can be null to represent "The default material". If all non-empty models have materials, there
+	// won't be a null entry.
+	std::vector<Ref<Material>> _indexed_materials;
 };
 
 } // namespace zylann::voxel
