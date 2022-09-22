@@ -2,8 +2,9 @@
 #define VOXEL_LOD_TERRAIN_UPDATE_DATA_H
 
 #include "../../constants/voxel_constants.h"
+#include "../../engine/distance_normalmaps.h"
 #include "../../generators/voxel_generator.h"
-#include "../../storage/voxel_data_map.h"
+#include "../../storage/voxel_data.h"
 #include "../../streams/voxel_stream.h"
 #include "../../util/fixed_array.h"
 #include "../voxel_mesh_map.h"
@@ -35,23 +36,24 @@ struct VoxelLodTerrainUpdateData {
 		uint8_t lod;
 	};
 
-	struct BlockToSave {
-		std::shared_ptr<VoxelBufferInternal> voxels;
-		Vector3i position;
-		uint8_t lod;
-	};
+	// struct BlockToSave {
+	// 	std::shared_ptr<VoxelBufferInternal> voxels;
+	// 	Vector3i position;
+	// 	uint8_t lod;
+	// };
 
 	// These values don't change during the update task.
 	struct Settings {
 		// Area within which voxels can exist.
 		// Note, these bounds might not be exactly represented. This volume is chunk-based, so the result will be
 		// approximated to the closest chunk.
-		Box3i bounds_in_voxels;
-		unsigned int lod_count = 0;
+		// Box3i bounds_in_voxels;
+		// unsigned int lod_count = 0;
+
 		// Distance between a viewer and the end of LOD0
 		float lod_distance = 0.f;
 		unsigned int view_distance_voxels = 512;
-		bool full_load_mode = false;
+		// bool full_load_mode = false;
 		bool run_stream_in_editor = true;
 		// If true, try to generate blocks and store them in the data map before posting mesh requests.
 		// If false, everything will generate non-edited voxels on the fly instead.
@@ -59,6 +61,7 @@ struct VoxelLodTerrainUpdateData {
 		bool cache_generated_blocks = false;
 		bool collision_enabled = true;
 		unsigned int mesh_block_size_po2 = 4;
+		NormalMapSettings virtual_texture_settings;
 	};
 
 	enum MeshState {
@@ -70,14 +73,25 @@ struct VoxelLodTerrainUpdateData {
 		MESH_UPDATE_SENT // The mesh is out of date, and an update request was sent, pending response
 	};
 
+	enum VirtualTextureState { //
+		VIRTUAL_TEXTURE_IDLE = 0,
+		VIRTUAL_TEXTURE_NEED_UPDATE,
+		VIRTUAL_TEXTURE_PENDING
+	};
+
 	struct MeshBlockState {
 		std::atomic<MeshState> state;
+		std::atomic<VirtualTextureState> virtual_texture_state;
 		uint8_t transition_mask;
 		bool active;
 		bool pending_transition_update;
 
 		MeshBlockState() :
-				state(MESH_NEVER_UPDATED), transition_mask(0), active(false), pending_transition_update(false) {}
+				state(MESH_NEVER_UPDATED),
+				virtual_texture_state(VIRTUAL_TEXTURE_IDLE),
+				transition_mask(0),
+				active(false),
+				pending_transition_update(false) {}
 	};
 
 	// Version of the mesh map designed to be mainly used for the threaded update task.

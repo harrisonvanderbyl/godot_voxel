@@ -1,20 +1,25 @@
 #ifndef VOXEL_TERRAIN_H
 #define VOXEL_TERRAIN_H
 
-#include "../../server/meshing_dependency.h"
-#include "../../storage/voxel_data_map.h"
-#include "../../util/godot/funcs.h"
+#include "../../constants/voxel_constants.h"
+#include "../../engine/meshing_dependency.h"
+#include "../../storage/voxel_data.h"
+#include "../../util/godot/memory.h"
+#include "../../util/math/box3i.h"
 #include "../voxel_data_block_enter_info.h"
 #include "../voxel_mesh_map.h"
 #include "../voxel_node.h"
 #include "voxel_mesh_block_vt.h"
 
-#include <scene/3d/node_3d.h>
+namespace zylann {
 
-namespace zylann::voxel {
+class AsyncDependencyTracker;
+
+namespace voxel {
 
 class VoxelTool;
 class VoxelInstancer;
+class VoxelSaveCompletionTracker;
 
 // Infinite paged terrain made of voxel blocks all with the same level of detail.
 // Voxels are polygonized around the viewer by distance in a large cubic space.
@@ -80,11 +85,13 @@ public:
 	void set_material_override(Ref<Material> material);
 	Ref<Material> get_material_override() const;
 
-	VoxelDataMap &get_storage() {
-		return _data_map;
+	VoxelData &get_storage() const {
+		ZN_ASSERT(_data != nullptr);
+		return *_data;
 	}
-	const VoxelDataMap &get_storage() const {
-		return _data_map;
+
+	std::shared_ptr<VoxelData> get_storage_shared() const {
+		return _data;
 	}
 
 	Ref<VoxelTool> get_voxel_tool() override;
@@ -122,10 +129,22 @@ public:
 
 	const Stats &get_stats() const;
 
-	struct BlockToSave {
-		std::shared_ptr<VoxelBufferInternal> voxels;
-		Vector3i position;
-	};
+	// struct BlockToSave {
+	// 	std::shared_ptr<VoxelBufferInternal> voxels;
+	// 	Vector3i position;
+	// };
+
+#ifdef TOOLS_ENABLED
+#ifdef ZN_GODOT_EXTENSION
+	// TODO GDX: GodotCpp fails to compile a class if its base is a custom class overriding
+	// `_get_configuration_warnings`
+	PackedStringArray _get_configuration_warnings() const override {
+		PackedStringArray warnings;
+		get_configuration_warnings(warnings);
+		return warnings;
+	}
+#endif
+#endif
 
 	// Internal
 
@@ -147,15 +166,17 @@ protected:
 	void _on_gi_mode_changed() override;
 
 private:
-	void _process();
+	void process();
 	void process_viewers();
+	void process_viewer_data_box_change(
+			uint32_t viewer_id, Box3i prev_data_box, Box3i new_data_box, bool can_load_blocks);
 	//void process_received_data_blocks();
 	void process_meshing();
-	void apply_mesh_update(const VoxelServer::BlockMeshOutput &ob);
-	void apply_data_block_response(VoxelServer::BlockDataOutput &ob);
+	void apply_mesh_update(const VoxelEngine::BlockMeshOutput &ob);
+	void apply_data_block_response(VoxelEngine::BlockDataOutput &ob);
 
 	void _on_stream_params_changed();
-	void _set_block_size_po2(int p_block_size_po2);
+	// void _set_block_size_po2(int p_block_size_po2);
 	//void make_all_view_dirty();
 	void start_updater();
 	void stop_updater();
@@ -163,29 +184,32 @@ private:
 	void stop_streamer();
 	void reset_map();
 
-	void view_data_block(Vector3i bpos, uint32_t viewer_id, bool require_notification);
+	// void view_data_block(Vector3i bpos, uint32_t viewer_id, bool require_notification);
 	void view_mesh_block(Vector3i bpos, bool mesh_flag, bool collision_flag);
-	void unview_data_block(Vector3i bpos);
+	// void unview_data_block(Vector3i bpos);
 	void unview_mesh_block(Vector3i bpos, bool mesh_flag, bool collision_flag);
-	void unload_data_block(Vector3i bpos);
+	// void unload_data_block(Vector3i bpos);
 	void unload_mesh_block(Vector3i bpos);
 	//void make_data_block_dirty(Vector3i bpos);
 	void try_schedule_mesh_update(VoxelMeshBlockVT &block);
 	void try_schedule_mesh_update_from_data(const Box3i &box_in_voxels);
 
-	void save_all_modified_blocks(bool with_copy);
+	void save_all_modified_blocks(bool with_copy, std::shared_ptr<AsyncDependencyTracker> tracker);
 	void get_viewer_pos_and_direction(Vector3 &out_pos, Vector3 &out_direction) const;
-	void send_block_data_requests();
+	void send_data_load_requests();
+	void consume_block_data_save_requests(
+			BufferedTaskScheduler &task_scheduler, std::shared_ptr<AsyncDependencyTracker> saving_tracker);
 
-	void emit_data_block_loaded(const VoxelDataBlock &block, Vector3i bpos);
-	void emit_data_block_unloaded(const VoxelDataBlock &block, Vector3i bpos);
+	void emit_data_block_loaded(Vector3i bpos);
+	void emit_data_block_unloaded(Vector3i bpos);
 
 	bool try_get_paired_viewer_index(uint32_t id, size_t &out_i) const;
 
-	void notify_data_block_enter(VoxelDataBlock &block, Vector3i bpos, uint32_t viewer_id);
+	void notify_data_block_enter(const VoxelDataBlock &block, Vector3i bpos, uint32_t viewer_id);
 
 	void get_viewers_in_area(std::vector<int> &out_viewer_ids, Box3i voxel_box) const;
 
+#ifdef ZN_GODOT
 	// Called each time a data block enters a viewer's area.
 	// This can be either when the block exists and the viewer gets close enough, or when it gets loaded.
 	// This only happens if data block enter notifications are enabled.
@@ -193,6 +217,7 @@ private:
 
 	// Called each time voxels are edited within a region.
 	GDVIRTUAL2(_on_area_edited, Vector3i, Vector3i);
+#endif
 
 	static void _bind_methods();
 
@@ -200,7 +225,7 @@ private:
 	Vector3i _b_voxel_to_data_block(Vector3 pos) const;
 	Vector3i _b_data_block_to_voxel(Vector3i pos) const;
 	//void _force_load_blocks_binding(Vector3 center, Vector3 extents) { force_load_blocks(center, extents); }
-	void _b_save_modified_blocks();
+	Ref<VoxelSaveCompletionTracker> _b_save_modified_blocks();
 	void _b_save_block(Vector3i p_block_pos);
 	void _b_set_bounds(AABB aabb);
 	AABB _b_get_bounds() const;
@@ -227,16 +252,12 @@ private:
 
 	std::vector<PairedViewer> _paired_viewers;
 
-	// Voxel storage
-	VoxelDataMap _data_map;
+	// Voxel storage. Using a shared_ptr so threaded tasks can use it safely.
+	std::shared_ptr<VoxelData> _data;
+
 	// Mesh storage
 	VoxelMeshMap<VoxelMeshBlockVT> _mesh_map;
 	uint32_t _mesh_block_size_po2 = constants::DEFAULT_BLOCK_SIZE_PO2;
-
-	// Area within which voxels can exist.
-	// Note, these bounds might not be exactly represented. This volume is chunk-based, so the result will be
-	// approximated to the closest chunk.
-	Box3i _bounds_in_voxels;
 
 	unsigned int _max_view_distance_voxels = 128;
 
@@ -259,13 +280,12 @@ private:
 	std::vector<Vector3i> _blocks_pending_update;
 	// Blocks that should be saved on the next process call.
 	// The order in that list does not matter.
-	std::vector<BlockToSave> _blocks_to_save;
+	std::vector<VoxelData::BlockToSave> _blocks_to_save;
 
-	Ref<VoxelStream> _stream;
 	Ref<VoxelMesher> _mesher;
-	Ref<VoxelGenerator> _generator;
 
-	// Data stored with a shared pointer so it can be sent to asynchronous tasks
+	// Data stored with a shared pointer so it can be sent to asynchronous tasks, and these tasks can be cancelled by
+	// setting a bool to false and re-instantiating the structure
 	std::shared_ptr<StreamingDependency> _streaming_dependency;
 	std::shared_ptr<MeshingDependency> _meshing_dependency;
 
@@ -289,6 +309,7 @@ private:
 	Stats _stats;
 };
 
-} // namespace zylann::voxel
+} // namespace voxel
+} // namespace zylann
 
 #endif // VOXEL_TERRAIN_H

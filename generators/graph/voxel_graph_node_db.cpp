@@ -1,5 +1,9 @@
 #include "voxel_graph_node_db.h"
 #include "../../constants/voxel_constants.h"
+#include "../../util/godot/array.h"
+#include "../../util/godot/curve.h"
+#include "../../util/godot/fast_noise_lite.h"
+#include "../../util/godot/image.h"
 #include "../../util/macros.h"
 #include "../../util/math/sdf.h"
 #include "../../util/noise/fast_noise_lite/fast_noise_lite.h"
@@ -14,10 +18,6 @@
 #ifdef VOXEL_ENABLE_FAST_NOISE_2
 #include "../../util/noise/fast_noise_2.h"
 #endif
-
-#include <modules/noise/fastnoise_lite.h>
-#include <modules/noise/noise.h>
-#include <scene/resources/curve.h>
 
 namespace zylann::voxel {
 
@@ -301,14 +301,21 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.outputs.push_back(Port("z"));
 	}
 	{
+		NodeType &t = types[VoxelGeneratorGraph::NODE_INPUT_SDF];
+		t.name = "InputSDF";
+		t.category = CATEGORY_INPUT;
+		t.outputs.push_back(Port("sdf"));
+	}
+	{
 		NodeType &t = types[VoxelGeneratorGraph::NODE_OUTPUT_SDF];
 		t.name = "OutputSDF";
 		t.category = CATEGORY_OUTPUT;
-		t.inputs.push_back(Port("sdf"));
+		t.inputs.push_back(Port("sdf", AUTO_CONNECT_Y));
 		t.outputs.push_back(Port("_out"));
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
 			const VoxelGraphRuntime::Buffer &input = ctx.get_input(0);
 			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
+			ZN_ASSERT(out.data != nullptr);
 			memcpy(out.data, input.data, input.size * sizeof(float));
 		};
 		t.range_analysis_func = [](RangeAnalysisContext &ctx) {
@@ -658,8 +665,8 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.category = CATEGORY_MATH;
 		t.inputs.push_back(Port("x0"));
 		t.inputs.push_back(Port("y0"));
-		t.inputs.push_back(Port("x1"));
-		t.inputs.push_back(Port("y1"));
+		t.inputs.push_back(Port("x1", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y1", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
 			const VoxelGraphRuntime::Buffer &x0 = ctx.get_input(0);
@@ -693,9 +700,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		t.inputs.push_back(Port("x0"));
 		t.inputs.push_back(Port("y0"));
 		t.inputs.push_back(Port("z0"));
-		t.inputs.push_back(Port("x1"));
-		t.inputs.push_back(Port("y1"));
-		t.inputs.push_back(Port("z1"));
+		t.inputs.push_back(Port("x1", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y1", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z1", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
 			const VoxelGraphRuntime::Buffer &x0 = ctx.get_input(0);
@@ -1026,14 +1033,14 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			VoxelGraphRuntime::Buffer &out = ctx.get_output(0);
 			const Params p = ctx.get_params<Params>();
 			for (uint32_t i = 0; i < out.size; ++i) {
-				out.data[i] = p.curve->interpolate_baked(a.data[i]);
+				out.data[i] = p.curve->sample_baked(a.data[i]);
 			}
 		};
 		t.range_analysis_func = [](RangeAnalysisContext &ctx) {
 			const Interval a = ctx.get_input(0);
 			const Params p = ctx.get_params<Params>();
 			if (a.is_single_value()) {
-				const float v = p.curve->interpolate_baked(a.min);
+				const float v = p.curve->sample_baked(a.min);
 				ctx.set_output(0, Interval::from_single_value(v));
 			} else {
 				const Interval r = get_curve_range(*p.curve, p.curve_range_data->sections, a);
@@ -1051,8 +1058,8 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_NOISE_2D];
 		t.name = "Noise2D";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.params.push_back(Param("noise", Noise::get_class_static(), &create_resource_to_variant<FastNoiseLite>));
 
@@ -1096,9 +1103,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_NOISE_3D];
 		t.name = "Noise3D";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.params.push_back(Param("noise", Noise::get_class_static(), &create_resource_to_variant<FastNoiseLite>));
 
@@ -1142,8 +1149,8 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_IMAGE_2D];
 		t.name = "Image";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.params.push_back(Param("image", Image::get_class_static(), nullptr));
 		t.compile_func = [](CompileContext &ctx) {
@@ -1188,7 +1195,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SDF_PLANE];
 		t.name = "SdfPlane";
 		t.category = CATEGORY_SDF;
-		t.inputs.push_back(Port("y"));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
 		t.inputs.push_back(Port("height"));
 		t.outputs.push_back(Port("sdf"));
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
@@ -1207,12 +1214,13 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SDF_BOX];
 		t.name = "SdfBox";
 		t.category = CATEGORY_SDF;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
-		t.inputs.push_back(Port("size_x"));
-		t.inputs.push_back(Port("size_y"));
-		t.inputs.push_back(Port("size_z"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
+		// TODO Is it worth it making size an input?
+		t.inputs.push_back(Port("size_x", 10.0));
+		t.inputs.push_back(Port("size_y", 10.0));
+		t.inputs.push_back(Port("size_z", 10.0));
 		t.outputs.push_back(Port("sdf"));
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
@@ -1251,10 +1259,11 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SDF_SPHERE];
 		t.name = "SdfSphere";
 		t.category = CATEGORY_SDF;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
-		t.inputs.push_back(Port("radius"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
+		// TODO Is it worth it making radius an input?
+		t.inputs.push_back(Port("radius", 1.f));
 		t.outputs.push_back(Port("sdf"));
 		t.process_buffer_func = [](ProcessBufferContext &ctx) {
 			const VoxelGraphRuntime::Buffer &x = ctx.get_input(0);
@@ -1282,9 +1291,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SDF_TORUS];
 		t.name = "SdfTorus";
 		t.category = CATEGORY_SDF;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
+		// TODO Is it worth it making radii an input?
 		t.inputs.push_back(Port("radius1", 16.f));
 		t.inputs.push_back(Port("radius2", 4.f));
 		t.outputs.push_back(Port("sdf"));
@@ -1371,10 +1381,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 						math::sdf_polynomial_smooth_union_side(a, b, params.smoothness);
 				switch (args) {
 					case math::SDF_ONLY_A:
-						ctx.ignore_input(0);
+						ctx.ignore_input(1);
 						break;
 					case math::SDF_ONLY_B:
-						ctx.ignore_input(1);
+						ctx.ignore_input(0);
 						break;
 					case math::SDF_BOTH:
 						break;
@@ -1388,10 +1398,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 				const math::SdfAffectingArguments args = math::sdf_union_side(a, b);
 				switch (args) {
 					case math::SDF_ONLY_A:
-						ctx.ignore_input(0);
+						ctx.ignore_input(1);
 						break;
 					case math::SDF_ONLY_B:
-						ctx.ignore_input(1);
+						ctx.ignore_input(0);
 						break;
 					case math::SDF_BOTH:
 						break;
@@ -1465,10 +1475,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 						math::sdf_polynomial_smooth_subtract_side(a, b, params.smoothness);
 				switch (args) {
 					case math::SDF_ONLY_A:
-						ctx.ignore_input(0);
+						ctx.ignore_input(1);
 						break;
 					case math::SDF_ONLY_B:
-						ctx.ignore_input(1);
+						ctx.ignore_input(0);
 						break;
 					case math::SDF_BOTH:
 						break;
@@ -1482,10 +1492,10 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 				const math::SdfAffectingArguments args = math::sdf_subtract_side(a, b);
 				switch (args) {
 					case math::SDF_ONLY_A:
-						ctx.ignore_input(0);
+						ctx.ignore_input(1);
 						break;
 					case math::SDF_ONLY_B:
-						ctx.ignore_input(1);
+						ctx.ignore_input(0);
 						break;
 					case math::SDF_BOTH:
 						break;
@@ -1604,9 +1614,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_SDF_SPHERE_HEIGHTMAP];
 		t.name = "SdfSphereHeightmap";
 		t.category = CATEGORY_SDF;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("sdf"));
 		t.params.push_back(Param("image", Image::get_class_static(), nullptr));
 		t.params.push_back(Param("radius", Variant::FLOAT, 10.f));
@@ -1668,9 +1678,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_NORMALIZE_3D];
 		t.name = "Normalize";
 		t.category = CATEGORY_MATH;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("nx"));
 		t.outputs.push_back(Port("ny"));
 		t.outputs.push_back(Port("nz"));
@@ -1733,8 +1743,8 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_2D];
 		t.name = "FastNoise2D";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.params.push_back(
 				Param("noise", ZN_FastNoiseLite::get_class_static(), &create_resource_to_variant<ZN_FastNoiseLite>));
@@ -1800,9 +1810,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_3D];
 		t.name = "FastNoise3D";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.params.push_back(
 				Param("noise", ZN_FastNoiseLite::get_class_static(), &create_resource_to_variant<ZN_FastNoiseLite>));
@@ -1870,8 +1880,8 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_GRADIENT_2D];
 		t.name = "FastNoiseGradient2D";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out_x"));
 		t.outputs.push_back(Port("out_y"));
 		t.params.push_back(Param("noise", ZN_FastNoiseLiteGradient::get_class_static(),
@@ -1923,9 +1933,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_GRADIENT_3D];
 		t.name = "FastNoiseGradient3D";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out_x"));
 		t.outputs.push_back(Port("out_y"));
 		t.outputs.push_back(Port("out_z"));
@@ -1985,8 +1995,8 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_2_2D];
 		t.name = "FastNoise2_2D";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.params.push_back(Param("noise", FastNoise2::get_class_static(), &create_resource_to_variant<FastNoise2>));
 
@@ -2032,9 +2042,9 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = types[VoxelGeneratorGraph::NODE_FAST_NOISE_2_3D];
 		t.name = "FastNoise2_3D";
 		t.category = CATEGORY_GENERATE;
-		t.inputs.push_back(Port("x"));
-		t.inputs.push_back(Port("y"));
-		t.inputs.push_back(Port("z"));
+		t.inputs.push_back(Port("x", AUTO_CONNECT_X));
+		t.inputs.push_back(Port("y", AUTO_CONNECT_Y));
+		t.inputs.push_back(Port("z", AUTO_CONNECT_Z));
 		t.outputs.push_back(Port("out"));
 		t.params.push_back(Param("noise", FastNoise2::get_class_static(), &create_resource_to_variant<FastNoise2>));
 
@@ -2187,7 +2197,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 		NodeType &t = _types[i];
 		_type_name_to_id.insert({ t.name, (VoxelGeneratorGraph::NodeTypeID)i });
 
-		for (size_t param_index = 0; param_index < t.params.size(); ++param_index) {
+		for (uint32_t param_index = 0; param_index < t.params.size(); ++param_index) {
 			Param &p = t.params[param_index];
 			t.param_name_to_index.insert({ p.name, param_index });
 			p.index = param_index;
@@ -2215,7 +2225,7 @@ VoxelGraphNodeDB::VoxelGraphNodeDB() {
 			}
 		}
 
-		for (size_t input_index = 0; input_index < t.inputs.size(); ++input_index) {
+		for (uint32_t input_index = 0; input_index < t.inputs.size(); ++input_index) {
 			const Port &p = t.inputs[input_index];
 			t.input_name_to_index.insert({ p.name, input_index });
 		}

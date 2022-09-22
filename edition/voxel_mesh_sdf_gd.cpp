@@ -1,6 +1,6 @@
 #include "voxel_mesh_sdf_gd.h"
-#include "../server/voxel_server.h"
-#include "../server/voxel_server_updater.h"
+#include "../engine/voxel_engine.h"
+#include "../engine/voxel_engine_updater.h"
 #include "../storage/voxel_buffer_gd.h"
 #include "../util/dstack.h"
 #include "../util/godot/funcs.h"
@@ -9,8 +9,9 @@
 #include "../util/profiling.h"
 #include "../util/string_funcs.h"
 #include "mesh_sdf.h"
-
-#include <scene/resources/mesh.h>
+// Necessary when compiling with GodotCpp because it is used in a registered method argument, and the type must be
+// defined
+#include "../util/godot/scene_tree.h"
 
 namespace zylann::voxel {
 
@@ -152,9 +153,14 @@ void VoxelMeshSDF::bake() {
 	_max_pos = box_max_pos;
 }
 
+#ifdef ZN_GODOT_EXTENSION
+void VoxelMeshSDF::bake_async(Object *scene_tree_o) {
+	SceneTree *scene_tree = Object::cast_to<SceneTree>(scene_tree_o);
+#else
 void VoxelMeshSDF::bake_async(SceneTree *scene_tree) {
+#endif
 	ZN_ASSERT_RETURN(scene_tree != nullptr);
-	VoxelServerUpdater::ensure_existence(scene_tree);
+	VoxelEngineUpdater::ensure_existence(scene_tree);
 
 	//ZN_ASSERT_RETURN_MSG(!_is_baking, "Already baking");
 
@@ -247,7 +253,7 @@ void VoxelMeshSDF::bake_async(SceneTree *scene_tree) {
 						task->box = Box3i(Vector3i(0, 0, z), Vector3i(res.x, res.y, 1));
 						task->obj_to_notify = obj_to_notify;
 
-						VoxelServer::get_singleton().push_async_task(task);
+						VoxelEngine::get_singleton().push_async_task(task);
 					}
 				} break;
 
@@ -315,7 +321,7 @@ void VoxelMeshSDF::bake_async(SceneTree *scene_tree) {
 	task->surface = surface;
 	task->obj_to_notify.reference_ptr(this);
 	task->boundary_sign_fix = _boundary_sign_fix;
-	VoxelServer::get_singleton().push_async_task(task);
+	VoxelEngine::get_singleton().push_async_task(task);
 }
 
 void VoxelMeshSDF::_on_bake_async_completed(Ref<gd::VoxelBuffer> buffer, Vector3 min_pos, Vector3 max_pos) {
@@ -426,6 +432,9 @@ void VoxelMeshSDF::_b_set_data(Dictionary d) {
 void VoxelMeshSDF::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("bake"), &VoxelMeshSDF::bake);
 	ClassDB::bind_method(D_METHOD("bake_async", "scene_tree"), &VoxelMeshSDF::bake_async);
+
+	ClassDB::bind_method(D_METHOD("is_baked"), &VoxelMeshSDF::is_baked);
+	ClassDB::bind_method(D_METHOD("is_baking"), &VoxelMeshSDF::is_baking);
 
 	ClassDB::bind_method(D_METHOD("get_mesh"), &VoxelMeshSDF::get_mesh);
 	ClassDB::bind_method(D_METHOD("set_mesh", "mesh"), &VoxelMeshSDF::set_mesh);

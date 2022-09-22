@@ -1,10 +1,15 @@
+#ifdef ZN_GODOT
+// Module specific
 #include "register_types.h"
+#endif
+
 #include "constants/voxel_string_names.h"
 #include "edition/voxel_mesh_sdf_gd.h"
 #include "edition/voxel_tool.h"
 #include "edition/voxel_tool_buffer.h"
 #include "edition/voxel_tool_lod_terrain.h"
 #include "edition/voxel_tool_terrain.h"
+#include "engine/voxel_engine_gd.h"
 #include "generators/graph/voxel_generator_graph.h"
 #include "generators/graph/voxel_graph_node_db.h"
 #include "generators/simple/voxel_generator_flat.h"
@@ -23,16 +28,14 @@
 #include "meshers/cubes/voxel_mesher_cubes.h"
 #include "meshers/dmc/voxel_mesher_dmc.h"
 #include "meshers/transvoxel/voxel_mesher_transvoxel.h"
-#include "server/voxel_server_gd.h"
 #include "storage/modifiers_gd.h"
 #include "storage/voxel_buffer_gd.h"
 #include "storage/voxel_memory_pool.h"
 #include "storage/voxel_metadata_variant.h"
 #include "streams/region/voxel_stream_region_files.h"
 #include "streams/sqlite/voxel_stream_sqlite.h"
-#include "streams/vox_loader.h"
+#include "streams/vox/vox_loader.h"
 #include "streams/voxel_block_serializer_gd.h"
-#include "streams/voxel_stream_block_files.h"
 #include "streams/voxel_stream_script.h"
 #include "terrain/fixed_lod/voxel_box_mover.h"
 #include "terrain/fixed_lod/voxel_terrain.h"
@@ -41,84 +44,101 @@
 #include "terrain/instancing/voxel_instancer.h"
 #include "terrain/variable_lod/voxel_lod_terrain.h"
 #include "terrain/voxel_mesh_block.h"
+#include "terrain/voxel_save_completion_tracker.h"
 #include "terrain/voxel_viewer.h"
 #include "util/macros.h"
 #include "util/noise/fast_noise_lite/fast_noise_lite.h"
 #include "util/noise/fast_noise_lite/fast_noise_lite_gradient.h"
 #include "util/string_funcs.h"
+#include "util/tasks/async_dependency_tracker.h"
 #include "util/tasks/godot/threaded_task_gd.h"
+
+#ifdef ZN_GODOT_EXTENSION
+#include "util/thread/godot_thread_helper.h"
+#endif
 
 #ifdef VOXEL_ENABLE_FAST_NOISE_2
 #include "util/noise/fast_noise_2.h"
 #endif
 
-#include <core/config/engine.h>
-#include <core/config/project_settings.h>
+#include "util/godot/class_db.h"
+#include "util/godot/engine.h"
+#include "util/godot/project_settings.h"
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #ifdef TOOLS_ENABLED
+
+#ifdef ZN_GODOT
 #include "editor/editor_plugin.h"
+#endif
 #include "editor/fast_noise_lite/fast_noise_lite_editor_plugin.h"
 #include "editor/graph/voxel_graph_editor_plugin.h"
 #include "editor/instance_library/voxel_instance_library_editor_plugin.h"
+#include "editor/instance_library/voxel_instance_library_multimesh_item_editor_plugin.h"
 #include "editor/instancer/voxel_instancer_editor_plugin.h"
 #include "editor/mesh_sdf/voxel_mesh_sdf_editor_plugin.h"
 #include "editor/terrain/voxel_terrain_editor_plugin.h"
 #include "editor/vox/vox_editor_plugin.h"
 #include "editor/voxel_debug.h"
+
 #ifdef VOXEL_ENABLE_FAST_NOISE_2
 #include "editor/fast_noise_2/fast_noise_2_editor_plugin.h"
 #endif
+
+#ifdef ZN_GODOT_EXTENSION
+#include "editor/about_window.h"
+#include "editor/fast_noise_lite/fast_noise_lite_editor_inspector_plugin.h"
+#include "editor/fast_noise_lite/fast_noise_lite_viewer.h"
+#include "editor/graph/editor_property_text_change_on_submit.h"
+#include "editor/graph/voxel_graph_editor.h"
+#include "editor/graph/voxel_graph_editor_inspector_plugin.h"
+#include "editor/graph/voxel_graph_editor_node.h"
+#include "editor/graph/voxel_graph_editor_node_preview.h"
+#include "editor/graph/voxel_graph_editor_shader_dialog.h"
+#include "editor/graph/voxel_graph_editor_window.h"
+#include "editor/graph/voxel_graph_node_inspector_wrapper.h"
+#include "editor/graph/voxel_range_analysis_dialog.h"
+#include "editor/instance_library/voxel_instance_library_inspector_plugin.h"
+#include "editor/instance_library/voxel_instance_library_multimesh_item_inspector_plugin.h"
+#include "editor/instancer/voxel_instancer_stat_view.h"
+#include "editor/mesh_sdf/voxel_mesh_sdf_viewer.h"
+#include "editor/terrain/voxel_terrain_editor_task_indicator.h"
+#endif
+
 #endif // TOOLS_ENABLED
 
 #ifdef VOXEL_RUN_TESTS
 #include "tests/tests.h"
 #endif
 
-namespace zylann::voxel {
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static VoxelServer::ThreadsConfig get_config_from_godot(unsigned int &out_main_thread_time_budget_usec) {
-	CRASH_COND(ProjectSettings::get_singleton() == nullptr);
+void print_size_reminders() {
+	using namespace zylann;
+	using namespace voxel;
 
-	VoxelServer::ThreadsConfig config;
+	ZN_PRINT_VERBOSE(format("Size of Variant: {}", sizeof(Variant)));
+	ZN_PRINT_VERBOSE(format("Size of Object: {}", sizeof(Object)));
+	ZN_PRINT_VERBOSE(format("Size of RefCounted: {}", sizeof(RefCounted)));
+	ZN_PRINT_VERBOSE(format("Size of Node: {}", sizeof(Node)));
+	ZN_PRINT_VERBOSE(format("Size of Node3D: {}", sizeof(Node3D)));
 
-	// Compute thread count for general pool.
-	// Note that the I/O thread counts as one used thread and will always be present.
-
-	// "RST" means changing the property requires an editor restart (or game restart)
-	GLOBAL_DEF_RST("voxel/threads/count/minimum", 1);
-	ProjectSettings::get_singleton()->set_custom_property_info("voxel/threads/count/minimum",
-			PropertyInfo(Variant::INT, "voxel/threads/count/minimum", PROPERTY_HINT_RANGE, "1,64"));
-
-	GLOBAL_DEF_RST("voxel/threads/count/margin_below_max", 1);
-	ProjectSettings::get_singleton()->set_custom_property_info("voxel/threads/count/margin_below_max",
-			PropertyInfo(Variant::INT, "voxel/threads/count/margin_below_max", PROPERTY_HINT_RANGE, "1,64"));
-
-	GLOBAL_DEF_RST("voxel/threads/count/ratio_over_max", 0.5f);
-	ProjectSettings::get_singleton()->set_custom_property_info("voxel/threads/count/ratio_over_max",
-			PropertyInfo(Variant::FLOAT, "voxel/threads/count/ratio_over_max", PROPERTY_HINT_RANGE, "0,1,0.1"));
-
-	GLOBAL_DEF_RST("voxel/threads/main/time_budget_ms", 8);
-	ProjectSettings::get_singleton()->set_custom_property_info("voxel/threads/main/time_budget_ms",
-			PropertyInfo(Variant::INT, "voxel/threads/main/time_budget_ms", PROPERTY_HINT_RANGE, "0,1000"));
-
-	out_main_thread_time_budget_usec =
-			1000 * int(ProjectSettings::get_singleton()->get("voxel/threads/main/time_budget_ms"));
-
-	config.thread_count_minimum =
-			math::max(1, int(ProjectSettings::get_singleton()->get("voxel/threads/count/minimum")));
-
-	// How many threads below available count on the CPU should we set as limit
-	config.thread_count_margin_below_max =
-			math::max(1, int(ProjectSettings::get_singleton()->get("voxel/threads/count/margin_below_max")));
-
-	// Portion of available CPU threads to attempt using
-	config.thread_count_ratio_over_max = zylann::math::clamp(
-			float(ProjectSettings::get_singleton()->get("voxel/threads/count/ratio_over_max")), 0.f, 1.f);
-
-	return config;
+	ZN_PRINT_VERBOSE(format("Size of RWLock: {}", sizeof(zylann::RWLock)));
+	ZN_PRINT_VERBOSE(format("Size of Mutex: {}", sizeof(zylann::Mutex)));
+	ZN_PRINT_VERBOSE(format("Size of BinaryMutex: {}", sizeof(zylann::BinaryMutex)));
+	ZN_PRINT_VERBOSE(format("Size of gd::VoxelBuffer: {}", sizeof(gd::VoxelBuffer)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelBufferInternal: {}", sizeof(VoxelBufferInternal)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelMeshBlock: {}", sizeof(VoxelMeshBlock)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelTerrain: {}", sizeof(VoxelTerrain)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelLodTerrain: {}", sizeof(VoxelLodTerrain)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelInstancer: {}", sizeof(VoxelInstancer)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelDataMap: {}", sizeof(VoxelDataMap)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelData: {}", sizeof(VoxelData)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelMesher::Output: {}", sizeof(VoxelMesher::Output)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelEngine::BlockMeshOutput: {}", sizeof(VoxelEngine::BlockMeshOutput)));
+	ZN_PRINT_VERBOSE(format("Size of VoxelModifierStack: {}", sizeof(VoxelModifierStack)));
+	ZN_PRINT_VERBOSE(format("Size of AsyncDependencyTracker: {}", sizeof(AsyncDependencyTracker)));
 }
-
-} // namespace zylann::voxel
 
 void initialize_voxel_module(ModuleInitializationLevel p_level) {
 	using namespace zylann;
@@ -132,19 +152,25 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 
 
 		unsigned int main_thread_budget_usec;
-		const VoxelServer::ThreadsConfig threads_config = get_config_from_godot(main_thread_budget_usec);
-		VoxelServer::create_singleton(threads_config);
-		VoxelServer::get_singleton().set_main_thread_time_budget_usec(main_thread_budget_usec);
+		const VoxelEngine::ThreadsConfig threads_config =
+				gd::VoxelEngine::get_config_from_godot(main_thread_budget_usec);
+		VoxelEngine::create_singleton(threads_config);
+		VoxelEngine::get_singleton().set_main_thread_time_budget_usec(main_thread_budget_usec);
+#if defined(ZN_GODOT)
 		// TODO Pick this from the current renderer + user option (at time of writing, Godot 4 has only one renderer and
 		// has not figured out how such option would be exposed).
 		// Could use `can_create_resources_async` but this is internal.
 		// AFAIK `is_low_end` will be `true` only for OpenGL backends, which are the only ones not supporting async
 		// resource creation.
-		VoxelServer::get_singleton().set_threaded_mesh_resource_building_enabled(
+		VoxelEngine::get_singleton().set_threaded_graphics_resource_building_enabled(
 				RenderingServer::get_singleton()->is_low_end() == false);
+#else
+		// TODO GDX: RenderingServer::is_low_end() is not exposed, can't tell if we can generate graphics resources in
+		// different threads
+#endif
 
-		gd::VoxelServer::create_singleton();
-		Engine::get_singleton()->add_singleton(Engine::Singleton("VoxelServer", gd::VoxelServer::get_singleton()));
+		gd::VoxelEngine::create_singleton();
+		add_godot_singleton("VoxelEngine", gd::VoxelEngine::get_singleton());
 
 		VoxelMetadataFactory::get_singleton().add_constructor_by_type<gd::VoxelMetadataVariant>(
 				gd::METADATA_TYPE_VARIANT);
@@ -153,45 +179,45 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 
 		// TODO Can I prevent users from instancing it? is "register_virtual_class" correct for a class that's not
 		// abstract?
-		ClassDB::register_class<gd::VoxelServer>();
+		ClassDB::register_class<gd::VoxelEngine>();
 
 		// Misc
 		ClassDB::register_class<VoxelBlockyModel>();
 		ClassDB::register_class<VoxelBlockyLibrary>();
 		ClassDB::register_class<VoxelColorPalette>();
 		ClassDB::register_class<VoxelInstanceLibrary>();
-		ClassDB::register_abstract_class<VoxelInstanceLibraryItem>();
+		register_abstract_class<VoxelInstanceLibraryItem>();
 		ClassDB::register_class<VoxelInstanceLibraryMultiMeshItem>();
 		ClassDB::register_class<VoxelInstanceLibrarySceneItem>();
 		ClassDB::register_class<VoxelDataBlockEnterInfo>();
+		ClassDB::register_class<VoxelSaveCompletionTracker>();
 
 		// Storage
 		ClassDB::register_class<gd::VoxelBuffer>();
 
 		// Nodes
-		ClassDB::register_abstract_class<VoxelNode>();
+		register_abstract_class<VoxelNode>();
 		ClassDB::register_class<VoxelTerrain>();
 		ClassDB::register_class<VoxelLodTerrain>();
 		ClassDB::register_class<VoxelViewer>();
 		ClassDB::register_class<VoxelInstanceGenerator>();
 		ClassDB::register_class<VoxelInstancer>();
 		ClassDB::register_class<VoxelInstanceComponent>();
-		ClassDB::register_abstract_class<gd::VoxelModifier>();
+		register_abstract_class<gd::VoxelModifier>();
 		ClassDB::register_class<gd::VoxelModifierSphere>();
 		ClassDB::register_class<gd::VoxelModifierMesh>();
 
 		// Streams
-		ClassDB::register_abstract_class<VoxelStream>();
-		ClassDB::register_class<VoxelStreamBlockFiles>();
+		register_abstract_class<VoxelStream>();
 		ClassDB::register_class<VoxelStreamRegionFiles>();
 		ClassDB::register_class<VoxelStreamScript>();
 		ClassDB::register_class<VoxelStreamSQLite>();
 
 		// Generators
-		ClassDB::register_abstract_class<VoxelGenerator>();
+		register_abstract_class<VoxelGenerator>();
 		ClassDB::register_class<VoxelGeneratorFlat>();
 		ClassDB::register_class<VoxelGeneratorWaves>();
-		ClassDB::register_abstract_class<VoxelGeneratorHeightmap>();
+		register_abstract_class<VoxelGeneratorHeightmap>();
 		ClassDB::register_class<VoxelGeneratorImage>();
 		ClassDB::register_class<VoxelGeneratorNoise2D>();
 		ClassDB::register_class<VoxelGeneratorNoise>();
@@ -207,12 +233,12 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		// Utilities
 		ClassDB::register_class<VoxelBoxMover>();
 		ClassDB::register_class<VoxelRaycastResult>();
-		ClassDB::register_abstract_class<VoxelTool>();
-		ClassDB::register_abstract_class<VoxelToolTerrain>();
-		ClassDB::register_abstract_class<VoxelToolLodTerrain>();
+		register_abstract_class<VoxelTool>();
+		register_abstract_class<VoxelToolTerrain>();
+		register_abstract_class<VoxelToolLodTerrain>();
 		// I had to bind this one despite it being useless as-is because otherwise Godot lazily initializes its class.
 		// And this can happen in a thread, causing crashes due to the concurrent access
-		ClassDB::register_abstract_class<VoxelToolBuffer>();
+		register_abstract_class<VoxelToolBuffer>();
 		ClassDB::register_class<gd::VoxelBlockSerializer>();
 		ClassDB::register_class<VoxelVoxLoader>();
 		ClassDB::register_class<ZN_FastNoiseLite>();
@@ -225,33 +251,29 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<VoxelMeshSDF>();
 
 		// Meshers
-		ClassDB::register_abstract_class<VoxelMesher>();
+		register_abstract_class<VoxelMesher>();
 		ClassDB::register_class<VoxelMesherBlocky>();
 		ClassDB::register_class<VoxelMesherTransvoxel>();
 		ClassDB::register_class<VoxelMesherDMC>();
 		ClassDB::register_class<VoxelMesherCubes>();
 
-		// Reminder: how to create a singleton accessible from scripts:
-		// Engine::get_singleton()->add_singleton(Engine::Singleton("SingletonName",singleton_instance));
-
-		// Reminders
-		ZN_PRINT_VERBOSE(format("Size of Variant: {}", sizeof(Variant)));
-		ZN_PRINT_VERBOSE(format("Size of Object: {}", sizeof(Object)));
-		ZN_PRINT_VERBOSE(format("Size of RefCounted: {}", sizeof(RefCounted)));
-		ZN_PRINT_VERBOSE(format("Size of Node: {}", sizeof(Node)));
-		ZN_PRINT_VERBOSE(format("Size of Node3D: {}", sizeof(Node3D)));
-		ZN_PRINT_VERBOSE(format("Size of gd::VoxelBuffer: {}", sizeof(gd::VoxelBuffer)));
-		ZN_PRINT_VERBOSE(format("Size of VoxelBufferInternal: {}", sizeof(VoxelBufferInternal)));
-		ZN_PRINT_VERBOSE(format("Size of VoxelMeshBlock: {}", sizeof(VoxelMeshBlock)));
-		ZN_PRINT_VERBOSE(format("Size of VoxelTerrain: {}", sizeof(VoxelTerrain)));
-		ZN_PRINT_VERBOSE(format("Size of VoxelLodTerrain: {}", sizeof(VoxelLodTerrain)));
-		ZN_PRINT_VERBOSE(format("Size of VoxelInstancer: {}", sizeof(VoxelInstancer)));
-		ZN_PRINT_VERBOSE(format("Size of VoxelDataMap: {}", sizeof(VoxelDataMap)));
-
-#ifdef VOXEL_RUN_TESTS
-		zylann::voxel::tests::run_voxel_tests();
+#ifdef ZN_GODOT_EXTENSION
+		// TODO GDX: I don't want to expose this one but there is no way not to expose it
+		ClassDB::register_class<ZN_GodotThreadHelper>();
 #endif
 
+		print_size_reminders();
+
+#ifdef ZN_GODOT
+		if (RenderingDevice::get_singleton() != nullptr) {
+			ZN_PRINT_VERBOSE(format("TextureArray max layers: {}",
+					RenderingDevice::get_singleton()->limit_get(RenderingDevice::LIMIT_MAX_TEXTURE_ARRAY_LAYERS)));
+		}
+#else
+		// TODO GDX: Not possible to access the default `RenderingDevice` to query its limits
+#endif
+
+#ifdef ZN_GODOT
 		// Compatibility with older version
 		ClassDB::add_compatibility_class("VoxelLibrary", "VoxelBlockyLibrary");
 		ClassDB::add_compatibility_class("Voxel", "VoxelBlockyModel");
@@ -259,19 +281,72 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		// Not possible to add a compat class for this one because the new name is indistinguishable from an old one.
 		// However this is an abstract class so it should not be found in resources hopefully
 		//ClassDB::add_compatibility_class("VoxelInstanceLibraryItemBase", "VoxelInstanceLibraryItem");
+#endif
+
+#ifdef VOXEL_RUN_TESTS
+		zylann::voxel::tests::run_voxel_tests();
+#endif
 	}
 
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+#if defined(ZN_GODOT)
 		EditorPlugins::add_by_type<VoxelGraphEditorPlugin>();
 		EditorPlugins::add_by_type<VoxelTerrainEditorPlugin>();
 		EditorPlugins::add_by_type<VoxelInstanceLibraryEditorPlugin>();
+		EditorPlugins::add_by_type<VoxelInstanceLibraryMultiMeshItemEditorPlugin>();
 		EditorPlugins::add_by_type<ZN_FastNoiseLiteEditorPlugin>();
-		EditorPlugins::add_by_type<magica::VoxEditorPlugin>();
+		EditorPlugins::add_by_type<magica::VoxelVoxEditorPlugin>();
 		EditorPlugins::add_by_type<VoxelInstancerEditorPlugin>();
 		EditorPlugins::add_by_type<VoxelMeshSDFEditorPlugin>();
 #ifdef VOXEL_ENABLE_FAST_NOISE_2
 		EditorPlugins::add_by_type<FastNoise2EditorPlugin>();
+#endif
+
+#elif defined(ZN_GODOT_EXTENSION)
+		// TODO GDX: Can't add plugins.
+		// See https://github.com/godotengine/godot-cpp/issues/640
+		// and https://github.com/godotengine/godot/pull/65592
+
+		// TODO GDX: I don't want to expose any of the following classes, but it looks like there is no way to make them
+		// functional as extensions BUT not expose them
+
+		ClassDB::register_class<VoxelAboutWindow>();
+		ClassDB::register_class<VoxelTerrainEditorInspectorPlugin>();
+		ClassDB::register_class<VoxelTerrainEditorPlugin>();
+		ClassDB::register_class<VoxelTerrainEditorTaskIndicator>();
+
+		ClassDB::register_class<ZN_FastNoiseLiteEditorPlugin>();
+		ClassDB::register_class<ZN_FastNoiseLiteEditorInspectorPlugin>();
+		ClassDB::register_class<ZN_FastNoiseLiteViewer>();
+
+		ClassDB::register_class<ZN_EditorImportPlugin>();
+
+		ClassDB::register_class<magica::VoxelVoxEditorPlugin>();
+		ClassDB::register_class<magica::VoxelVoxMeshImporter>();
+		ClassDB::register_class<magica::VoxelVoxSceneImporter>();
+
+		ClassDB::register_class<VoxelInstancerEditorPlugin>();
+		ClassDB::register_class<VoxelInstancerStatView>();
+
+		ClassDB::register_class<VoxelInstanceLibraryEditorPlugin>();
+		ClassDB::register_class<VoxelInstanceLibraryInspectorPlugin>();
+		ClassDB::register_class<VoxelInstanceLibraryMultiMeshItemEditorPlugin>();
+		ClassDB::register_class<VoxelInstanceLibraryMultiMeshItemInspectorPlugin>();
+
+		ClassDB::register_class<VoxelMeshSDFViewer>();
+		ClassDB::register_class<VoxelMeshSDFEditorPlugin>();
+		ClassDB::register_class<VoxelMeshSDFInspectorPlugin>();
+
+		ClassDB::register_class<ZN_EditorPropertyTextChangeOnSubmit>();
+		ClassDB::register_class<VoxelGraphEditorInspectorPlugin>();
+		ClassDB::register_class<VoxelGraphEditorNodePreview>();
+		ClassDB::register_class<VoxelGraphEditorNode>();
+		ClassDB::register_class<VoxelGraphEditor>();
+		ClassDB::register_class<VoxelGraphEditorPlugin>();
+		ClassDB::register_class<VoxelGraphEditorShaderDialog>();
+		ClassDB::register_class<VoxelGraphNodeInspectorWrapper>();
+		ClassDB::register_class<VoxelRangeAnalysisDialog>();
 #endif
 	}
 #endif // TOOLS_ENABLED
@@ -282,28 +357,44 @@ void uninitialize_voxel_module(ModuleInitializationLevel p_level) {
 	using namespace voxel;
 
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		remove_godot_singleton("VoxelEngine");
+
 		// At this point, the GDScript module has nullified GDScriptLanguage::singleton!!
-		// That means it's impossible to free scripts still referenced by VoxelServer. And that can happen, because
+		// That means it's impossible to free scripts still referenced by VoxelEngine. And that can happen, because
 		// users can write custom generators, which run inside threads, and these threads are hosted in the server...
 		// See https://github.com/Zylann/godot_voxel/issues/189
 
 		VoxelMesherTransvoxel::free_static_resources();
 		VoxelStringNames::destroy_singleton();
 		VoxelGraphNodeDB::destroy_singleton();
-		gd::VoxelServer::destroy_singleton();
-		VoxelServer::destroy_singleton();
+		gd::VoxelEngine::destroy_singleton();
+		VoxelEngine::destroy_singleton();
 
-		// Do this last as VoxelServer might still be holding some refs to voxel blocks
+		// Do this last as VoxelEngine might still be holding some refs to voxel blocks
 		VoxelMemoryPool::destroy_singleton();
-		// TODO No remove?
 	}
 
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		zylann::free_debug_resources();
 
-		// TODO Seriously, no remove?
-		//EditorPlugins::remove_by_type<VoxelGraphEditorPlugin>();
+		// TODO GDX: Can't remove plugins.
 	}
 #endif // TOOLS_ENABLED
 }
+
+#ifdef ZN_GODOT_EXTENSION
+extern "C" {
+// Library entry point
+GDNativeBool GDN_EXPORT voxel_library_init(const GDNativeInterface *p_interface,
+		const GDNativeExtensionClassLibraryPtr p_library, GDNativeInitialization *r_initialization) {
+	godot::GDExtensionBinding::InitObject init_obj(p_interface, p_library, r_initialization);
+
+	init_obj.register_initializer(initialize_voxel_module);
+	init_obj.register_terminator(uninitialize_voxel_module);
+	init_obj.set_minimum_library_initialization_level(godot::MODULE_INITIALIZATION_LEVEL_SCENE);
+
+	return init_obj.init();
+}
+}
+#endif

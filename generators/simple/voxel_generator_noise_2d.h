@@ -1,10 +1,11 @@
 #ifndef VOXEL_GENERATOR_NOISE_2D_H
 #define VOXEL_GENERATOR_NOISE_2D_H
 
+#include "../../util/macros.h"
 #include "voxel_generator_heightmap.h"
 
-class Curve;
-class Noise;
+ZN_GODOT_FORWARD_DECLARE(class Curve)
+ZN_GODOT_FORWARD_DECLARE(class Noise)
 
 namespace zylann::voxel {
 
@@ -22,6 +23,13 @@ public:
 	Ref<Curve> get_curve() const;
 
 	Result generate_block(VoxelGenerator::VoxelQueryData &input) override;
+
+	bool supports_series_generation() const override {
+		return true;
+	}
+
+	void generate_series(Span<const float> positions_x, Span<const float> positions_y, Span<const float> positions_z,
+			unsigned int channel, Span<float> out_values, Vector3f min_pos, Vector3f max_pos) override;
 
 private:
 	void _on_noise_changed();

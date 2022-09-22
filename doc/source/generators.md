@@ -116,6 +116,9 @@ You might notice that despite it being 3D, it still appears to produce a heightm
 
 ![Voxel graph 3D noise expanded](images/voxel_graph_noise3d_expanded.webp)
 
+!!! note
+    Some nodes have default connections. For example, with 3D noise, if you don't connect inputs, they will automatically assume (X,Y,Z) voxel position by default. If you need a specific constant in an input, this behavior can be opted out by turning off `autoconnect_default_inputs` in the inspector.
+
 #### Planet
 
 We are not actually forced to keep generating the world like a plane. We can go even crazier, and do planets. A good way to begin a planet is to make a sphere with the `SdfSphere` node:
@@ -329,6 +332,24 @@ Custom generator
 See [Scripting](scripting.md)
 
 
+Using `VoxelGeneratorGraph` as a brush
+-----------------------------------------
+
+This feature is currently only supported in `VoxelLodTerrain` and smooth voxels.
+
+`VoxelTool` offers simple functions to modify smooth terrain with `do_sphere` for example, but it is also possible to define procedural custom brushes using `VoxelGeneratorGraph`. The same workflow applies to making such a graph, except it can accept an `InputSDF` node, so the signed distance field can be modified, not just generated.
+
+Example of additive `do_sphere` recreated with a graph:
+
+![Additive sphere brush graph](images/graph_sphere_brush.webp)
+
+A more complex flattening brush, which both subtracts matter in a sphere and adds matter in a hemisphere to form a ledge (here defaulting to a radius of 30 for better preview, but making unit-sized brushes may be easier to re-use):
+
+![Dual flattening brush](images/graph_flatten_brush.webp)
+
+One more detail to consider, is how big the original brush is. Usually voxel generators have no particular bounds, but it matters here because it will be used locally. For example if your make a spherical brush, you might use a `SdfSphere` node with radius `1`. Then, your original size will be `(2,2,2)`. You can then transform that brush (scale, rotate...) when using `do_sphere` at the desired position.
+
+
 VoxelGeneratorGraph nodes
 -----------------------------
 
@@ -340,6 +361,7 @@ Constant              | Outputs a constant number.
 InputX                | Outputs the X coordinate of the current voxel.
 InputY                | Outputs the Y coordinate of the current voxel.
 InputZ                | Outputs the Z coordinate of the current voxel.
+InputSDF              | Outputs the existing signed distance at the current voxel. This may only be used in specific situations, such as using the graph as a procedural brush.
 
 
 ### Outputs

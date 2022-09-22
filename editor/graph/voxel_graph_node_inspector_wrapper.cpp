@@ -1,16 +1,21 @@
 #include "voxel_graph_node_inspector_wrapper.h"
 #include "../../generators/graph/voxel_graph_node_db.h"
+#include "../../util/godot/array.h"
+#include "../../util/godot/constants.h"
 #include "../../util/godot/funcs.h"
 #include "../../util/log.h"
 #include "voxel_graph_editor.h"
 
-#include <core/object/undo_redo.h>
 #include <algorithm>
 
 namespace zylann::voxel {
 
+namespace {
+const char *AUTOCONNECT_PROPERY_NAME = "autoconnect_default_inputs";
+}
+
 void VoxelGraphNodeInspectorWrapper::setup(
-		Ref<VoxelGeneratorGraph> p_graph, uint32_t p_node_id, UndoRedo *ur, VoxelGraphEditor *ed) {
+		Ref<VoxelGeneratorGraph> p_graph, uint32_t p_node_id, Ref<EditorUndoRedoManager> ur, VoxelGraphEditor *ed) {
 	_graph = p_graph;
 	_node_id = p_node_id;
 	_undo_redo = ur;
@@ -29,14 +34,14 @@ void VoxelGraphNodeInspectorWrapper::_get_property_list(List<PropertyInfo> *p_li
 		return;
 	}
 
-	p_list->push_back(PropertyInfo(Variant::STRING_NAME, "name", PROPERTY_HINT_NONE, String(), PROPERTY_USAGE_EDITOR));
+	p_list->push_back(PropertyInfo(Variant::STRING_NAME, "name", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR));
 
 	const uint32_t node_type_id = graph->get_node_type_id(_node_id);
 	const VoxelGraphNodeDB::NodeType &node_type = VoxelGraphNodeDB::get_singleton().get_type(node_type_id);
 
 	// Params
 
-	p_list->push_back(PropertyInfo(Variant::NIL, "Params", PROPERTY_HINT_NONE, String(), PROPERTY_USAGE_CATEGORY));
+	p_list->push_back(PropertyInfo(Variant::NIL, "Params", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_CATEGORY));
 
 	for (size_t i = 0; i < node_type.params.size(); ++i) {
 		const VoxelGraphNodeDB::Param &param = node_type.params[i];
@@ -57,15 +62,26 @@ void VoxelGraphNodeInspectorWrapper::_get_property_list(List<PropertyInfo> *p_li
 
 	// Inputs
 
-	p_list->push_back(
-			PropertyInfo(Variant::NIL, "Input Defaults", PROPERTY_HINT_NONE, String(), PROPERTY_USAGE_CATEGORY));
+	p_list->push_back(PropertyInfo(Variant::NIL, "Input Defaults", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_CATEGORY));
+
+	const bool autoconnect = graph->get_node_default_inputs_autoconnect(_node_id);
 
 	for (size_t i = 0; i < node_type.inputs.size(); ++i) {
 		const VoxelGraphNodeDB::Port &port = node_type.inputs[i];
 		PropertyInfo pi;
 		pi.name = port.name;
 		pi.type = port.default_value.get_type();
+		if (autoconnect && port.auto_connect != VoxelGraphNodeDB::AUTO_CONNECT_NONE) {
+			// This default value won't be used because the port will automatically connect when compiled
+			pi.usage |= PROPERTY_USAGE_READ_ONLY;
+		}
 		p_list->push_back(pi);
+	}
+
+	// Autoconnect
+
+	if (node_type.has_autoconnect_inputs()) {
+		p_list->push_back(PropertyInfo(Variant::BOOL, AUTOCONNECT_PROPERY_NAME));
 	}
 }
 
@@ -73,8 +89,8 @@ void VoxelGraphNodeInspectorWrapper::_get_property_list(List<PropertyInfo> *p_li
 // Contrary to VisualScript (for which this has to be done manually to the user), submitting the text field containing
 // the expression's code also changes dynamic inputs of the node and reconnects existing connections, all as one
 // UndoRedo action.
-static void update_expression_inputs(
-		VoxelGeneratorGraph &generator, uint32_t node_id, String code, UndoRedo &ur, VoxelGraphEditor &graph_editor) {
+static void update_expression_inputs(VoxelGeneratorGraph &generator, uint32_t node_id, String code,
+		EditorUndoRedoManager &ur, VoxelGraphEditor &graph_editor) {
 	//
 	const CharString code_utf8 = code.utf8();
 	std::vector<std::string_view> new_input_names;
@@ -152,15 +168,29 @@ bool VoxelGraphNodeInspectorWrapper::_set(const StringName &p_name, const Varian
 	ERR_FAIL_COND_V(graph.is_null(), false);
 
 	ERR_FAIL_COND_V(_undo_redo == nullptr, false);
-	UndoRedo &ur = *_undo_redo;
+	EditorUndoRedoManager &ur = **_undo_redo;
 
-	if (p_name == "name") {
+	const String name = p_name;
+
+	if (name == "name") {
 		String previous_name = graph->get_node_name(_node_id);
 		ur.create_action("Set VoxelGeneratorGraph node name");
 		ur.add_do_method(graph.ptr(), "set_node_name", _node_id, p_value);
 		ur.add_undo_method(graph.ptr(), "set_node_name", _node_id, previous_name);
 		// ur->add_do_method(this, "notify_property_list_changed");
 		// ur->add_undo_method(this, "notify_property_list_changed");
+		ur.commit_action();
+		return true;
+	}
+
+	if (name == AUTOCONNECT_PROPERY_NAME) {
+		ur.create_action(String("Set ") + AUTOCONNECT_PROPERY_NAME);
+		const bool prev_autoconnect = graph->get_node_default_inputs_autoconnect(_node_id);
+		ur.add_do_method(graph.ptr(), "set_node_default_inputs_autoconnect", _node_id, p_value);
+		ur.add_undo_method(graph.ptr(), "set_node_default_inputs_autoconnect", _node_id, prev_autoconnect);
+		// To update disabled default input values in the inspector
+		ur.add_do_method(this, "notify_property_list_changed");
+		ur.add_undo_method(this, "notify_property_list_changed");
 		ur.commit_action();
 		return true;
 	}
@@ -208,8 +238,15 @@ bool VoxelGraphNodeInspectorWrapper::_get(const StringName &p_name, Variant &r_r
 	Ref<VoxelGeneratorGraph> graph = get_graph();
 	ERR_FAIL_COND_V(graph.is_null(), false);
 
-	if (p_name == "name") {
+	const String name = p_name;
+
+	if (name == "name") {
 		r_ret = graph->get_node_name(_node_id);
+		return true;
+	}
+
+	if (name == AUTOCONNECT_PROPERY_NAME) {
+		r_ret = graph->get_node_default_inputs_autoconnect(_node_id);
 		return true;
 	}
 

@@ -1,9 +1,10 @@
 #ifndef VOXEL_LOD_TERRAIN_HPP
 #define VOXEL_LOD_TERRAIN_HPP
 
-#include "../../server/mesh_block_task.h"
-#include "../../server/voxel_server.h"
-#include "../../storage/voxel_data_map.h"
+#include "../../engine/mesh_block_task.h"
+#include "../../engine/voxel_engine.h"
+#include "../../storage/voxel_data.h"
+#include "../../util/godot/shader_material_pool.h"
 #include "../voxel_mesh_map.h"
 #include "../voxel_node.h"
 #include "lod_octree.h"
@@ -22,6 +23,11 @@ namespace zylann::voxel {
 class VoxelTool;
 class VoxelStream;
 class VoxelInstancer;
+
+class ShaderMaterialPoolVLT : public ShaderMaterialPool {
+public:
+	void recycle(Ref<ShaderMaterial> material);
+};
 
 // Paged terrain made of voxel blocks of variable level of detail.
 // Designed for highest view distances, preferably using smooth voxels.
@@ -90,54 +96,20 @@ public:
 	void set_threaded_update_enabled(bool enabled);
 	bool is_threaded_update_enabled() const;
 
-	bool is_area_editable(Box3i p_box) const;
-	VoxelSingleValue get_voxel(Vector3i pos, unsigned int channel, VoxelSingleValue defval);
-	bool try_set_voxel_without_update(Vector3i pos, unsigned int channel, uint64_t value);
-	void copy(Vector3i p_origin_voxels, VoxelBufferInternal &dst_buffer, uint8_t channels_mask);
+	void set_normalmap_enabled(bool enable);
+	bool is_normalmap_enabled() const;
 
-	template <typename F>
-	void write_box(const Box3i &p_voxel_box, unsigned int channel, F action) {
-		const Box3i voxel_box = p_voxel_box.clipped(get_voxel_bounds());
-		if (is_full_load_mode_enabled() == false && !is_area_editable(voxel_box)) {
-			ZN_PRINT_VERBOSE("Area not editable");
-			return;
-		}
-		Ref<VoxelGenerator> generator = _generator;
-		VoxelDataLodMap::Lod &data_lod0 = _data->lods[0];
-		{
-			RWLockWrite wlock(data_lod0.map_lock);
-			data_lod0.map.write_box(
-					voxel_box, channel, action, [&generator](VoxelBufferInternal &voxels, Vector3i pos) {
-						if (generator.is_valid()) {
-							VoxelGenerator::VoxelQueryData q{ voxels, pos, 0 };
-							generator->generate_block(q);
-						}
-					});
-		}
-		post_edit_area(voxel_box);
-	}
+	void set_octahedral_normal_encoding(bool enable);
+	bool get_octahedral_normal_encoding() const;
 
-	template <typename F>
-	void write_box_2(const Box3i &p_voxel_box, unsigned int channel1, unsigned int channel2, F action) {
-		const Box3i voxel_box = p_voxel_box.clipped(get_voxel_bounds());
-		if (is_full_load_mode_enabled() == false && !is_area_editable(voxel_box)) {
-			ZN_PRINT_VERBOSE("Area not editable");
-			return;
-		}
-		Ref<VoxelGenerator> generator = _generator;
-		VoxelDataLodMap::Lod &data_lod0 = _data->lods[0];
-		{
-			RWLockWrite wlock(data_lod0.map_lock);
-			data_lod0.map.write_box_2(
-					voxel_box, channel1, channel2, action, [&generator](VoxelBufferInternal &voxels, Vector3i pos) {
-						if (generator.is_valid()) {
-							VoxelGenerator::VoxelQueryData q{ voxels, pos, 0 };
-							generator->generate_block(q);
-						}
-					});
-		}
-		post_edit_area(voxel_box);
-	}
+	void set_normalmap_tile_resolution_min(int resolution);
+	int get_normalmap_tile_resolution_min() const;
+
+	void set_normalmap_tile_resolution_max(int resolution);
+	int get_normalmap_tile_resolution_max() const;
+
+	void set_normalmap_begin_lod_index(int lod_index);
+	int get_normalmap_begin_lod_index() const;
 
 	// These must be called after an edit
 	void post_edit_area(Box3i p_box);
@@ -150,8 +122,8 @@ public:
 	void set_voxel_bounds(Box3i p_box);
 
 	inline Box3i get_voxel_bounds() const {
-		CRASH_COND(_update_data == nullptr);
-		return _update_data->settings.bounds_in_voxels;
+		ZN_ASSERT(_data != nullptr);
+		return _data->get_bounds();
 	}
 
 	void set_collision_update_delay(int delay_msec);
@@ -233,7 +205,17 @@ public:
 
 #ifdef TOOLS_ENABLED
 
-	TypedArray<String> get_configuration_warnings() const override;
+	void get_configuration_warnings(PackedStringArray &warnings) const override;
+
+#ifdef ZN_GODOT_EXTENSION
+	// TODO GDX: GodotCpp fails to compile a class if its base is a custom class overriding
+	// `_get_configuration_warnings`
+	PackedStringArray _get_configuration_warnings() const override {
+		PackedStringArray warnings;
+		get_configuration_warnings(warnings);
+		return warnings;
+	}
+#endif
 
 #endif // TOOLS_ENABLED
 
@@ -250,7 +232,12 @@ public:
 	Array get_mesh_block_surface(Vector3i block_pos, int lod_index) const;
 	void get_meshed_block_positions_at_lod(int lod_index, std::vector<Vector3i> &out_positions) const;
 
-	std::shared_ptr<VoxelDataLodMap> get_storage() const {
+	inline VoxelData &get_storage() const {
+		ZN_ASSERT(_data != nullptr);
+		return *_data;
+	}
+
+	inline std::shared_ptr<VoxelData> get_storage_shared() const {
 		return _data;
 	}
 
@@ -260,11 +247,14 @@ protected:
 	void _on_gi_mode_changed() override;
 
 private:
-	void _process(float delta);
+	void process(float delta);
 	void apply_main_thread_update_tasks();
 
-	void apply_mesh_update(VoxelServer::BlockMeshOutput &ob);
-	void apply_data_block_response(VoxelServer::BlockDataOutput &ob);
+	void apply_mesh_update(VoxelEngine::BlockMeshOutput &ob);
+	void apply_data_block_response(VoxelEngine::BlockDataOutput &ob);
+	void apply_virtual_texture_update(VoxelEngine::BlockVirtualTextureOutput &ob);
+	void apply_virtual_texture_update_to_block(
+			VoxelMeshBlockVLT &block, VirtualTextureOutput &ob, unsigned int lod_index);
 
 	void start_updater();
 	void stop_updater();
@@ -275,17 +265,23 @@ private:
 
 	Vector3 get_local_viewer_pos() const;
 	void _set_lod_count(int p_lod_count);
-	void set_mesh_block_active(VoxelMeshBlockVLT &block, bool active);
+	void set_mesh_block_active(VoxelMeshBlockVLT &block, bool active, bool with_fading);
 
 	void _on_stream_params_changed();
 
-	void save_all_modified_blocks(bool with_copy);
+	void update_shader_material_pool_template();
 
-	// TODO Put in common with VoxelLodTerrainUpdateTask
-	// void send_block_save_requests(Span<BlockToSave> blocks_to_save);
+	void save_all_modified_blocks(bool with_copy);
 
 	void process_deferred_collision_updates(uint32_t timeout_msec);
 	void process_fading_blocks(float delta);
+
+	struct LocalCameraInfo {
+		Vector3 position;
+		Vector3 forward;
+	};
+
+	LocalCameraInfo get_local_camera_info() const;
 
 	void _b_save_modified_blocks();
 	void _b_set_voxel_bounds(AABB aabb);
@@ -294,7 +290,8 @@ private:
 	Array _b_debug_print_sdf_top_down(Vector3i center, Vector3i extents);
 	int _b_debug_get_mesh_block_count() const;
 	int _b_debug_get_data_block_count() const;
-	Error _b_debug_dump_as_scene(String fpath, bool include_instancer) const;
+	// TODO GDX: Can't bind functions returning a `godot::Error` enum
+	int /*Error*/ _b_debug_dump_as_scene(String fpath, bool include_instancer) const;
 
 	Dictionary _b_get_statistics() const;
 
@@ -311,9 +308,34 @@ private:
 	ProcessCallback _process_callback = PROCESS_CALLBACK_IDLE;
 
 	Ref<Material> _material;
-	std::vector<Ref<ShaderMaterial>> _shader_material_pool;
+
+	// The main reason this pool even exists is because of this: https://github.com/godotengine/godot/issues/34741
+	// Blocks need individual shader parameters for several features,
+	// so a lot of ShaderMaterial copies using the same shader are created.
+	// The terrain must be able to run in editor, but in that context, Godot connects a signal of Shader to
+	// every ShaderMaterial using it. Godot does that in order to update properties in THE inspector if the shader
+	// changes (which is debatable since only the edited material needs this, if it even is edited!).
+	// The problem is, that also means every time `ShaderMaterial::duplicate()` is called, when it assigns `shader`,
+	// it has to add a connection to a HUGE list. Which is very slow, enough to cause stutters.
+	ShaderMaterialPoolVLT _shader_material_pool;
 
 	FixedArray<VoxelMeshMap<VoxelMeshBlockVLT>, constants::MAX_LOD> _mesh_maps_per_lod;
+
+	// Copies of meshes just for fading out.
+	// Used when a transition mask changes. This can make holes appear if not smoothly faded.
+	struct FadingOutMesh {
+		// Position in space coordinates local to the volume
+		Vector3 local_position;
+		DirectMeshInstance mesh_instance;
+		// Changing properties is the reason we may want to fade the mesh, so we may hold on a copy of the material with
+		// properties before the fade starts.
+		Ref<ShaderMaterial> shader_material;
+		// Going from 1 to 0
+		float progress;
+	};
+
+	// These are "fire and forget"
+	std::vector<FadingOutMesh> _fading_out_meshes;
 
 	unsigned int _collision_lod_count = 0;
 	unsigned int _collision_layer = 1;
@@ -328,15 +350,21 @@ private:
 	// TODO Optimization: use FlatMap? Need to check how many blocks get in there, probably not many
 	FixedArray<std::map<Vector3i, VoxelMeshBlockVLT *>, constants::MAX_LOD> _fading_blocks_per_lod;
 
+	struct FadingVirtualTexture {
+		Vector3i block_position;
+		uint32_t lod_index;
+		float progress;
+	};
+
+	std::vector<FadingVirtualTexture> _fading_virtual_textures;
+
 	VoxelInstancer *_instancer = nullptr;
 
 	Ref<VoxelMesher> _mesher;
-	Ref<VoxelGenerator> _generator;
-	Ref<VoxelStream> _stream;
 
 	// Data stored with a shared pointer so it can be sent to asynchronous tasks
 	bool _threaded_update_enabled = false;
-	std::shared_ptr<VoxelDataLodMap> _data;
+	std::shared_ptr<VoxelData> _data;
 	std::shared_ptr<VoxelLodTerrainUpdateData> _update_data;
 	std::shared_ptr<StreamingDependency> _streaming_dependency;
 	std::shared_ptr<MeshingDependency> _meshing_dependency;
@@ -346,7 +374,7 @@ private:
 
 		uint32_t volume_id = 0;
 		VoxelLodTerrain *self = nullptr;
-		VoxelServer::BlockMeshOutput data;
+		VoxelEngine::BlockMeshOutput data;
 	};
 
 	FixedArray<std::unordered_map<Vector3i, RefCount>, constants::MAX_LOD> _queued_main_thread_mesh_updates;
@@ -381,7 +409,7 @@ private:
 
 } // namespace zylann::voxel
 
-VARIANT_ENUM_CAST(zylann::voxel::VoxelLodTerrain::ProcessCallback)
-VARIANT_ENUM_CAST(zylann::voxel::VoxelLodTerrain::DebugDrawFlag)
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelLodTerrain, ProcessCallback)
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelLodTerrain, DebugDrawFlag)
 
 #endif // VOXEL_LOD_TERRAIN_HPP

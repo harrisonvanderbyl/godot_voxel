@@ -1,9 +1,8 @@
 #include "voxel_blocky_library.h"
+#include "../../util/godot/time.h"
 #include "../../util/log.h"
+#include "../../util/math/triangle.h"
 #include "../../util/string_funcs.h"
-
-#include <core/math/geometry_2d.h>
-#include <core/os/time.h>
 
 #include <bitset>
 
@@ -65,8 +64,9 @@ bool VoxelBlockyLibrary::_set(const StringName &p_name, const Variant &p_value) 
 	//		}
 
 	//	} else
-	if (p_name.operator String().begins_with("voxels/")) {
-		unsigned int idx = p_name.operator String().get_slicec('/', 1).to_int();
+	String name(p_name);
+	if (name.begins_with("voxels/")) {
+		unsigned int idx = name.get_slicec('/', 1).to_int();
 		set_voxel(idx, p_value);
 		return true;
 	}
@@ -81,8 +81,9 @@ bool VoxelBlockyLibrary::_get(const StringName &p_name, Variant &r_ret) const {
 	//		return true;
 
 	//	} else
-	if (p_name.operator String().begins_with("voxels/")) {
-		const unsigned int idx = p_name.operator String().get_slicec('/', 1).to_int();
+	String name(p_name);
+	if (name.begins_with("voxels/")) {
+		const unsigned int idx = name.get_slicec('/', 1).to_int();
 		if (idx < _voxel_types.size()) {
 			r_ret = _voxel_types[idx];
 			return true;
@@ -94,7 +95,7 @@ bool VoxelBlockyLibrary::_get(const StringName &p_name, Variant &r_ret) const {
 
 void VoxelBlockyLibrary::_get_property_list(List<PropertyInfo> *p_list) const {
 	for (unsigned int i = 0; i < _voxel_types.size(); ++i) {
-		p_list->push_back(PropertyInfo(Variant::OBJECT, "voxels/" + itos(i), PROPERTY_HINT_RESOURCE_TYPE,
+		p_list->push_back(PropertyInfo(Variant::OBJECT, String("voxels/") + itos(i), PROPERTY_HINT_RESOURCE_TYPE,
 				VoxelBlockyModel::get_class_static()));
 	}
 }
@@ -425,8 +426,10 @@ Ref<VoxelBlockyModel> VoxelBlockyLibrary::_b_get_voxel_by_name(StringName name) 
 	return _voxel_types[id];
 }
 
-TypedArray<Material> VoxelBlockyLibrary::_b_get_materials() const {
-	TypedArray<Material> materials;
+GodotMaterialArray VoxelBlockyLibrary::_b_get_materials() const {
+	// Note, if at least one non-empty voxel has no material, there will be one null entry in this list to represent
+	// "The default material".
+	GodotMaterialArray materials;
 	materials.resize(_indexed_materials.size());
 	for (size_t i = 0; i < _indexed_materials.size(); ++i) {
 		materials[i] = _indexed_materials[i];

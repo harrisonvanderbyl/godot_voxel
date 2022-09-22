@@ -5,6 +5,7 @@
 #include "../../streams/instance_data.h"
 #include "../../util/fixed_array.h"
 #include "../../util/godot/direct_multimesh_instance.h"
+#include "../../util/godot/node_3d.h"
 #include "../../util/math/box3i.h"
 #include "../../util/memory.h"
 #include "voxel_instance_generator.h"
@@ -15,25 +16,31 @@
 #include "../../editor/voxel_debug.h"
 #endif
 
-#include <scene/3d/node_3d.h>
 //#include <scene/resources/material.h> // Included by node.h lol
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-class PhysicsBody3D;
+ZN_GODOT_FORWARD_DECLARE(class PhysicsBody3D);
 
-namespace zylann::voxel {
+namespace zylann {
+
+class AsyncDependencyTracker;
+
+namespace voxel {
 
 class VoxelNode;
 class VoxelInstancerRigidBody;
 class VoxelInstanceComponent;
 class VoxelInstanceLibrarySceneItem;
 class VoxelTool;
+class SaveBlockDataTask;
+class BufferedTaskScheduler;
 
 // Note: a large part of this node could be made generic to support the sole idea of instancing within octants?
 // Even nodes like gridmaps could be rebuilt on top of this, if its concept of "grid" was decoupled.
+// It is coupled to terrain at the moment because of performance.
 
 // Add-on to voxel nodes, allowing to spawn elements on the surface.
 // These elements are rendered with hardware instancing, can have collisions, and also be persistent.
@@ -61,7 +68,7 @@ public:
 
 	// Actions
 
-	void save_all_modified_blocks();
+	void save_all_modified_blocks(BufferedTaskScheduler &tasks, std::shared_ptr<AsyncDependencyTracker> tracker);
 
 	// Event handlers
 
@@ -83,15 +90,31 @@ public:
 	// Debug
 
 	int debug_get_block_count() const;
-	Dictionary debug_get_instance_counts() const;
+	void debug_get_instance_counts(std::unordered_map<uint32_t, uint32_t> &counts_per_layer) const;
 	void debug_dump_as_scene(String fpath) const;
 	Node *debug_dump_as_nodes() const;
+
+	void debug_set_draw_enabled(bool enabled);
+	bool debug_is_draw_enabled() const;
+
+	enum DebugDrawFlag { //
+		DEBUG_DRAW_ALL_BLOCKS,
+		DEBUG_DRAW_EDITED_BLOCKS,
+		DEBUG_DRAW_FLAGS_COUNT
+	};
+
+	void debug_set_draw_flag(DebugDrawFlag flag_index, bool enabled);
+	bool debug_get_draw_flag(DebugDrawFlag flag_index) const;
 
 	// Editor
 
 #ifdef TOOLS_ENABLED
-	void set_show_gizmos(bool enable);
-	TypedArray<String> get_configuration_warnings() const override;
+#if defined(ZN_GODOT)
+	PackedStringArray get_configuration_warnings() const override;
+#elif defined(ZN_GODOT_EXTENSION)
+	PackedStringArray _get_configuration_warnings() const override;
+#endif
+	virtual void get_configuration_warnings(PackedStringArray &warnings) const;
 #endif
 
 protected:
@@ -111,7 +134,8 @@ private:
 	void clear_blocks_in_layer(int layer_id);
 	void clear_layers();
 	void update_visibility();
-	void save_block(Vector3i data_grid_pos, int lod_index) const;
+	SaveBlockDataTask *save_block(
+			Vector3i data_grid_pos, int lod_index, std::shared_ptr<AsyncDependencyTracker> tracker) const;
 
 	// Get a layer assuming it exists
 	Layer &get_layer(int id);
@@ -148,6 +172,8 @@ private:
 
 	static void remove_floating_scene_instances(Block &block, const Transform3D &parent_transform, Box3i p_voxel_box,
 			const VoxelTool &voxel_tool, int block_size_po2);
+
+	Dictionary _b_debug_get_instance_counts() const;
 
 	static void _bind_methods();
 
@@ -209,15 +235,13 @@ private:
 
 	FixedArray<Lod, MAX_LOD> _lods;
 
-	// Does not have nulls
+	// Does not have nulls. Indices matter.
 	std::vector<UniquePtr<Block>> _blocks;
 
 	// Each layer corresponds to a library item. Addresses of values in the map are expected to be stable.
 	std::unordered_map<int, Layer> _layers;
 
 	Ref<VoxelInstanceLibrary> _library;
-
-	std::vector<Transform3D> _transform_cache;
 
 	VoxelNode *_parent = nullptr;
 	unsigned int _parent_data_block_size_po2 = constants::DEFAULT_BLOCK_SIZE_PO2;
@@ -227,11 +251,14 @@ private:
 #ifdef TOOLS_ENABLED
 	DebugRenderer _debug_renderer;
 	bool _gizmos_enabled = false;
+	uint8_t _debug_draw_flags = 0;
 #endif
 };
 
-} // namespace zylann::voxel
+} // namespace voxel
+} // namespace zylann
 
-VARIANT_ENUM_CAST(zylann::voxel::VoxelInstancer::UpMode);
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelInstancer, UpMode);
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelInstancer, DebugDrawFlag);
 
 #endif // VOXEL_INSTANCER_H

@@ -1,10 +1,10 @@
 #ifndef ZN_PROGRAM_GRAPH_H
 #define ZN_PROGRAM_GRAPH_H
 
+#include "../../util/godot/variant.h"
+#include "../../util/hash_funcs.h"
+#include "../../util/math/vector2.h"
 #include "../../util/non_copyable.h"
-
-#include <core/math/vector2.h>
-#include <core/templates/hashfuncs.h>
 
 #include <string>
 #include <string_view>
@@ -53,6 +53,9 @@ public:
 		std::vector<Port> outputs;
 		std::vector<Variant> params;
 		std::vector<Variant> default_inputs;
+		// When enabled, all disconnected inputs will automatically connect to a commonly used node when the graph is
+		// compiled. If not enabled, default input values will be used instead.
+		bool autoconnect_default_inputs = false;
 
 		uint32_t find_input_connection(PortLocation src, uint32_t input_port_index) const;
 		uint32_t find_output_connection(uint32_t output_port_index, PortLocation dst) const;
@@ -82,9 +85,9 @@ public:
 	bool is_output_port_valid(PortLocation loc) const;
 
 	bool has_path(uint32_t p_src_node_id, uint32_t p_dst_node_id) const;
+	void find_dependencies(uint32_t node_id, std::vector<uint32_t> &out_order) const;
 	void find_dependencies(std::vector<uint32_t> nodes_to_process, std::vector<uint32_t> &out_order) const;
 	void find_immediate_dependencies(uint32_t node_id, std::vector<uint32_t> &deps) const;
-	void find_depth_first(uint32_t start_node_id, std::vector<uint32_t> &order) const;
 	void find_terminal_nodes(std::vector<uint32_t> &node_ids) const;
 
 	template <typename F>
@@ -115,15 +118,19 @@ public:
 	void copy_from(const ProgramGraph &other, bool copy_subresources);
 
 	void get_connections(std::vector<ProgramGraph::Connection> &connections) const;
+	void get_node_ids(std::vector<uint32_t> &node_ids) const;
 	//void get_connections_from_and_to(std::vector<ProgramGraph::Connection> &connections, uint32_t node_id) const;
 
+	// Finds first node having the given name and returns its ID. Returns NULL_ID if not found.
 	uint32_t find_node_by_name(StringName name) const;
+	// Finds first node having the given type and returns its ID. Returns NULL_ID if not found.
+	uint32_t find_node_by_type(uint32_t type_id) const;
 
 	uint32_t generate_node_id();
 
-	int get_nodes_count() const;
+	unsigned int get_nodes_count() const;
 
-	void debug_print_dot_file(String file_path) const;
+	void debug_print_dot_file(String p_file_path) const;
 
 private:
 	std::unordered_map<uint32_t, Node *> _nodes;

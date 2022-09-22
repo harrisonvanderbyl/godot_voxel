@@ -1,8 +1,14 @@
 #include "voxel_mesher_cubes.h"
 #include "../../storage/voxel_buffer_internal.h"
+#include "../../util/godot/base_material_3d.h"
 #include "../../util/godot/funcs.h"
+#include "../../util/godot/geometry_2d.h"
+#include "../../util/godot/image.h"
+#include "../../util/godot/shader_material.h"
+#include "../../util/godot/string.h"
+#include "../../util/math/conv.h"
 #include "../../util/profiling.h"
-#include <core/math/geometry_2d.h>
+#include "../../util/string_funcs.h"
 
 namespace zylann::voxel {
 
@@ -620,17 +626,17 @@ Ref<Image> make_greedy_atlas(
 	ZN_PROFILE_SCOPE();
 
 	// Pack rectangles
-	Vector<Vector2i> result_points;
+	std::vector<Vector2i> result_points;
 	Vector2i result_size;
 	{
 		ZN_PROFILE_SCOPE_NAMED("Packing");
-		Vector<Vector2i> sizes;
+		std::vector<Vector2i> sizes;
 		sizes.resize(atlas_data.images.size());
 		for (unsigned int i = 0; i < atlas_data.images.size(); ++i) {
 			const VoxelMesherCubes::GreedyAtlasData::ImageInfo &im = atlas_data.images[i];
-			sizes.write[i] = Vector2i(im.size_x, im.size_y);
+			sizes[i] = Vector2i(im.size_x, im.size_y);
 		}
-		Geometry2D::make_atlas(sizes, result_points, result_size);
+		geometry_2d_make_atlas(to_span(sizes), result_points, result_size);
 	}
 
 	// DEBUG
@@ -678,7 +684,7 @@ Ref<Image> make_greedy_atlas(
 			const VoxelMesherCubes::GreedyAtlasData::ImageInfo &im = atlas_data.images[i];
 			const Vector2i dst_pos = result_points[i];
 			Span<const Color8> src_data =
-					const_span_from_position_and_size(atlas_data.colors, im.first_color_index, im.size_x * im.size_y);
+					to_span_from_position_and_size(atlas_data.colors, im.first_color_index, im.size_x * im.size_y);
 
 			// Blit rectangle
 			for (unsigned int y = 0; y < im.size_y; ++y) {
@@ -692,7 +698,7 @@ Ref<Image> make_greedy_atlas(
 	}
 	Ref<Image> image;
 	image.instantiate();
-	image->create(result_size.x, result_size.y, false, Image::FORMAT_RGBA8, im_data);
+	create_image_from_data(**image, result_size, false, Image::FORMAT_RGBA8, im_data);
 
 	return image;
 }
@@ -880,10 +886,10 @@ void VoxelMesherCubes::build(VoxelMesher::Output &output, const VoxelMesher::Inp
 			break;
 	}
 
-	if (input.lod > 0) {
+	if (input.lod_index > 0) {
 		// TODO This is very crude LOD, there will be cracks at the borders.
 		// One way would be to not cull faces on chunk borders if any neighbor face is air
-		const float lod_scale = 1 << input.lod;
+		const float lod_scale = 1 << input.lod_index;
 		for (unsigned int material_index = 0; material_index < cache.arrays_per_material.size(); ++material_index) {
 			Arrays &arrays = cache.arrays_per_material[material_index];
 			for (unsigned int i = 0; i < arrays.positions.size(); ++i) {
@@ -897,9 +903,8 @@ void VoxelMesherCubes::build(VoxelMesher::Output &output, const VoxelMesher::Inp
 	for (unsigned int material_index = 0; material_index < MATERIAL_COUNT; ++material_index) {
 		const Arrays &arrays = cache.arrays_per_material[material_index];
 
-		Output::Surface surface;
-
 		if (arrays.positions.size() != 0) {
+			Output::Surface surface;
 			Array &mesh_arrays = surface.arrays;
 			mesh_arrays.resize(Mesh::ARRAY_MAX);
 
@@ -910,7 +915,7 @@ void VoxelMesherCubes::build(VoxelMesher::Output &output, const VoxelMesher::Inp
 
 				copy_to(positions, arrays.positions);
 				copy_to(normals, arrays.normals);
-				raw_copy_to(indices, arrays.indices);
+				copy_to(indices, arrays.indices);
 
 				mesh_arrays[Mesh::ARRAY_VERTEX] = positions;
 				mesh_arrays[Mesh::ARRAY_NORMAL] = normals;
@@ -918,7 +923,7 @@ void VoxelMesherCubes::build(VoxelMesher::Output &output, const VoxelMesher::Inp
 
 				if (arrays.colors.size() > 0) {
 					PackedColorArray colors;
-					raw_copy_to(colors, arrays.colors);
+					copy_to(colors, arrays.colors);
 					mesh_arrays[Mesh::ARRAY_COLOR] = colors;
 				}
 				if (arrays.uvs.size() > 0) {
@@ -929,12 +934,13 @@ void VoxelMesherCubes::build(VoxelMesher::Output &output, const VoxelMesher::Inp
 			}
 
 			//surface.collision_enabled = (material_index == MATERIAL_OPAQUE);
+
+			surface.material_index = material_index;
+			output.surfaces.push_back(surface);
 		}
 		//  else {
 		// 	// Empty
 		// }
-
-		output.surfaces.push_back(surface);
 	}
 
 	output.primitive_type = Mesh::PRIMITIVE_TRIANGLES;
@@ -1060,11 +1066,13 @@ void VoxelMesherCubes::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "palette", PROPERTY_HINT_RESOURCE_TYPE,
 						 VoxelColorPalette::get_class_static()),
 			"set_palette", "get_palette");
-	ADD_PROPERTY(
-			PropertyInfo(Variant::OBJECT, "opaque_material", PROPERTY_HINT_RESOURCE_TYPE, Material::get_class_static()),
+
+	const String material_hint =
+			String(BaseMaterial3D::get_class_static()) + "," + String(ShaderMaterial::get_class_static());
+
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "opaque_material", PROPERTY_HINT_RESOURCE_TYPE, material_hint),
 			"_set_opaque_material", "_get_opaque_material");
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "transparent_material", PROPERTY_HINT_RESOURCE_TYPE,
-						 Material::get_class_static()),
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "transparent_material", PROPERTY_HINT_RESOURCE_TYPE, material_hint),
 			"_set_transparent_material", "_get_transparent_material");
 
 	BIND_ENUM_CONSTANT(MATERIAL_OPAQUE);

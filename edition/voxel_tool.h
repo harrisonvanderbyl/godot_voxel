@@ -2,14 +2,11 @@
 #define VOXEL_TOOL_H
 
 #include "../storage/funcs.h"
+#include "../storage/voxel_buffer_gd.h"
 #include "../util/math/box3i.h"
 #include "../util/math/sdf.h"
 #include "funcs.h"
 #include "voxel_raycast_result.h"
-
-namespace zylann::voxel::gd {
-class VoxelBuffer;
-}
 
 // TODO Need to review VoxelTool to account for transformed volumes
 
@@ -21,11 +18,11 @@ namespace zylann::voxel {
 class VoxelTool : public RefCounted {
 	GDCLASS(VoxelTool, RefCounted)
 public:
-	enum Mode { //
-		MODE_ADD,
-		MODE_REMOVE,
-		MODE_SET,
-		MODE_TEXTURE_PAINT
+	enum Mode {
+		MODE_ADD = ops::MODE_ADD,
+		MODE_REMOVE = ops::MODE_REMOVE,
+		MODE_SET = ops::MODE_SET,
+		MODE_TEXTURE_PAINT = ops::MODE_TEXTURE_PAINT
 	};
 
 	VoxelTool();
@@ -33,8 +30,8 @@ public:
 	void set_value(uint64_t val);
 	uint64_t get_value() const;
 
-	void set_channel(int channel);
-	int get_channel() const;
+	void set_channel(VoxelBufferInternal::ChannelId p_channel);
+	VoxelBufferInternal::ChannelId get_channel() const;
 
 	void set_mode(Mode mode);
 	Mode get_mode() const;
@@ -57,6 +54,9 @@ public:
 	void set_texture_falloff(float falloff);
 	float get_texture_falloff() const;
 
+	void set_sdf_strength(float strength);
+	float get_sdf_strength() const;
+
 	// TODO Methods working on a whole area must use an implementation that minimizes locking!
 
 	// The following methods represent one edit each. Pick the correct one for the job.
@@ -64,8 +64,6 @@ public:
 	virtual void set_voxel(Vector3i pos, uint64_t v);
 	virtual void set_voxel_f(Vector3i pos, float v);
 	virtual void do_point(Vector3i pos);
-	virtual void do_line(Vector3i begin, Vector3i end);
-	virtual void do_circle(Vector3i pos, int radius, Vector3i direction);
 	virtual void do_sphere(Vector3 center, float radius);
 	virtual void do_box(Vector3i begin, Vector3i end);
 
@@ -104,8 +102,6 @@ private:
 	void _b_set_voxel_f(Vector3i pos, float v);
 	Ref<VoxelRaycastResult> _b_raycast(Vector3 pos, Vector3 dir, float max_distance, uint32_t collision_mask);
 	void _b_do_point(Vector3i pos);
-	void _b_do_line(Vector3 begin, Vector3 end);
-	void _b_do_circle(Vector3 pos, float radius, Vector3 direction);
 	void _b_do_sphere(Vector3 pos, float radius);
 	void _b_do_box(Vector3i begin, Vector3i end);
 	void _b_copy(Vector3i pos, Ref<gd::VoxelBuffer> voxels, int channel_mask);
@@ -113,12 +109,15 @@ private:
 	Variant _b_get_voxel_metadata(Vector3i pos) const;
 	void _b_set_voxel_metadata(Vector3i pos, Variant meta);
 	bool _b_is_area_editable(AABB box) const;
+	void _b_set_channel(gd::VoxelBuffer::ChannelId p_channel);
+	gd::VoxelBuffer::ChannelId _b_get_channel() const;
 
 protected:
 	uint64_t _value = 0;
 	uint64_t _eraser_value = 0; // air
-	int _channel = 0;
+	VoxelBufferInternal::ChannelId _channel = VoxelBufferInternal::CHANNEL_TYPE;
 	float _sdf_scale = 1.f;
+	float _sdf_strength = 1.f;
 	Mode _mode = MODE_ADD;
 
 	// Used on smooth terrain
@@ -127,6 +126,6 @@ protected:
 
 } // namespace zylann::voxel
 
-VARIANT_ENUM_CAST(zylann::voxel::VoxelTool::Mode)
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelTool, Mode)
 
 #endif // VOXEL_TOOL_H

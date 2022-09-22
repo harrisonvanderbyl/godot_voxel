@@ -1,7 +1,9 @@
 #include "voxel_box_mover.h"
 #include "../../meshers/blocky/voxel_mesher_blocky.h"
 #include "../../meshers/cubes/voxel_mesher_cubes.h"
-#include "../../util/godot/funcs.h"
+#include "../../storage/voxel_data.h"
+#include "../../util/godot/ref_counted.h"
+#include "voxel_terrain.h"
 
 namespace zylann::voxel {
 
@@ -33,8 +35,8 @@ static AABB expand_with_vector(AABB box, Vector3 v) {
 static real_t calculate_i_offset(const AABB &box, AABB other, real_t motion, int i, int j, int k) {
 	const real_t EPSILON = 0.001;
 
-	Vector3 other_end = other.position + other.size;
-	Vector3 box_end = box.position + box.size;
+	const Vector3 other_end = other.position + other.size;
+	const Vector3 box_end = box.position + box.size;
 
 	if (other_end[k] <= box.position[k] || other.position[k] >= box_end[k]) {
 		return motion;
@@ -45,14 +47,14 @@ static real_t calculate_i_offset(const AABB &box, AABB other, real_t motion, int
 	}
 
 	if (motion > 0.0 && other_end[i] <= box.position[i]) {
-		real_t off = box.position[i] - other_end[i] - EPSILON;
+		const real_t off = box.position[i] - other_end[i] - EPSILON;
 		if (off < motion) {
 			motion = off;
 		}
 	}
 
 	if (motion < 0.0 && other.position[i] >= box_end[i]) {
-		real_t off = box_end[i] - other.position[i] + EPSILON;
+		const real_t off = box_end[i] - other.position[i] + EPSILON;
 		if (off > motion) {
 			motion = off;
 		}
@@ -182,7 +184,7 @@ static bool intersects(Span<const AABB> aabbs, const AABB &box) {
 
 static void collect_boxes(
 		VoxelTerrain &p_terrain, AABB query_box, uint32_t collision_nask, std::vector<AABB> &potential_boxes) {
-	const VoxelDataMap &voxels = p_terrain.get_storage();
+	const VoxelData &voxels = p_terrain.get_storage();
 
 	const int min_x = int(Math::floor(query_box.position.x));
 	const int min_y = int(Math::floor(query_box.position.y));
@@ -203,11 +205,14 @@ static void collect_boxes(
 		ERR_FAIL_COND_MSG(library_ref.is_null(), "VoxelMesherBlocky has no library assigned");
 		VoxelBlockyLibrary &library = **library_ref;
 		const int channel = VoxelBufferInternal::CHANNEL_TYPE;
+		VoxelSingleValue defval;
+		defval.i = 0;
 
+		// TODO Optimization: read the whole box of voxels at once, querying individually is slower
 		for (i.z = min_z; i.z < max_z; ++i.z) {
 			for (i.y = min_y; i.y < max_y; ++i.y) {
 				for (i.x = min_x; i.x < max_x; ++i.x) {
-					const int type_id = voxels.get_voxel(i, channel);
+					const int type_id = voxels.get_voxel(i, channel, defval).i;
 
 					if (library.has_voxel(type_id)) {
 						const VoxelBlockyModel &voxel_type = library.get_voxel_const(type_id);
@@ -230,11 +235,14 @@ static void collect_boxes(
 
 	} else if (try_get_as(p_terrain.get_mesher(), mesher_cubes)) {
 		const int channel = VoxelBufferInternal::CHANNEL_COLOR;
+		VoxelSingleValue defval;
+		defval.i = 0;
 
+		// TODO Optimization: read the whole box of voxels at once, querying individually is slower
 		for (i.z = min_z; i.z < max_z; ++i.z) {
 			for (i.y = min_y; i.y < max_y; ++i.y) {
 				for (i.x = min_x; i.x < max_x; ++i.x) {
-					const int color_data = voxels.get_voxel(i, channel);
+					const int color_data = voxels.get_voxel(i, channel, defval).i;
 					if (color_data != 0) {
 						potential_boxes.push_back(AABB(i, Vector3(1, 1, 1)));
 					}
@@ -326,7 +334,12 @@ float VoxelBoxMover::get_max_step_height() const {
 	return _max_step_height;
 }
 
+#if defined(ZN_GODOT)
 Vector3 VoxelBoxMover::_b_get_motion(Vector3 pos, Vector3 motion, AABB aabb, Node *terrain_node) {
+#elif defined(ZN_GODOT_EXTENSION)
+Vector3 VoxelBoxMover::_b_get_motion(Vector3 pos, Vector3 motion, AABB aabb, Object *terrain_node_o) {
+	Node *terrain_node = Object::cast_to<Node>(terrain_node_o);
+#endif
 	ERR_FAIL_COND_V(terrain_node == nullptr, Vector3());
 	VoxelTerrain *terrain = Object::cast_to<VoxelTerrain>(terrain_node);
 	ERR_FAIL_COND_V(terrain == nullptr, Vector3());

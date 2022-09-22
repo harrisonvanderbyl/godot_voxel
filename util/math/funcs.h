@@ -2,9 +2,20 @@
 #define VOXEL_MATH_FUNCS_H
 
 #include "../errors.h"
+
+#if defined(ZN_GODOT)
 #include <core/math/math_funcs.h>
+#elif defined(ZN_GODOT_EXTENSION)
+#include <godot_cpp/core/math.hpp>
+using namespace godot;
+#endif
+
+#include "constants.h"
+#include <float.h> // for `_isnan`
 
 namespace zylann::math {
+
+// Generic math functions, only using scalar types.
 
 template <typename T>
 inline T min(const T a, const T b) {
@@ -47,7 +58,8 @@ inline T max(const T a, const T b, const T c, const T d, const T e, const T f, c
 }
 
 // template versions require explicit types.
-// float versions do not require casting all the time, so optional double-precision support with `real_t` is easier.
+// float versions do not require casting all the time, so optional double-precision support with `real_t` is easier when
+// using arguments of different precision.
 
 inline float minf(float a, float b) {
 	return a < b ? a : b;
@@ -89,6 +101,11 @@ inline double clampf(double x, double min_value, double max_value) {
 template <typename T>
 inline T squared(const T x) {
 	return x * x;
+}
+
+template <typename T>
+inline T cubed(const T x) {
+	return x * x * x;
 }
 
 // Performs euclidean division, aka floored division.
@@ -186,6 +203,16 @@ inline unsigned int get_next_power_of_two_32(unsigned int x) {
 	return ++x;
 }
 
+// Function to find the previous power of 2 to an integer.
+inline unsigned int get_previous_power_of_two_32(unsigned int x) {
+	x |= x >> 1;
+	x |= x >> 2;
+	x |= x >> 4;
+	x |= x >> 8;
+	x |= x >> 16;
+	return x - (x >> 1);
+}
+
 // Assuming `pot == (1 << i)`, returns `i`.
 inline unsigned int get_shift_from_power_of_two_32(unsigned int pot) {
 #ifdef DEBUG_ENABLED
@@ -239,8 +266,9 @@ inline void sort(T &a, T &b, T &c, T &d) {
 
 // Returns -1 if `x` is negative, and 1 otherwise.
 // Contrary to a usual version like GLSL, this one returns 1 when `x` is 0, instead of 0.
-inline float sign_nonzero(float x) {
-	return x < 0.f ? -1.f : 1.f;
+template <typename T>
+inline T sign_nonzero(T x) {
+	return x < 0 ? -1 : 1;
 }
 
 // Trilinear interpolation between corner values of a unit-sized cube.
@@ -275,6 +303,89 @@ inline T interpolate_trilinear(const T v000, const T v100, const T v101, const T
 	const T v = v0 + p.z * (v1 - v0);
 
 	return v;
+}
+
+// Math::is_nan exists in Godot core, but not in GDExtension...
+inline bool is_nan(double p_val) {
+#ifdef _MSC_VER
+	return _isnan(p_val);
+#elif defined(__GNUC__) && __GNUC__ < 6
+	union {
+		uint64_t u;
+		double f;
+	} ieee754;
+	ieee754.f = p_val;
+	// (unsigned)(0x7ff0000000000001 >> 32) : 0x7ff00000
+	return ((((unsigned)(ieee754.u >> 32) & 0x7fffffff) + ((unsigned)ieee754.u != 0)) > 0x7ff00000);
+#else
+	return isnan(p_val);
+#endif
+}
+
+// Math::is_nan exists in Godot core, but not in GDExtension...
+inline bool is_nan(float p_val) {
+#ifdef _MSC_VER
+	return _isnan(p_val);
+#elif defined(__GNUC__) && __GNUC__ < 6
+	union {
+		uint32_t u;
+		float f;
+	} ieee754;
+	ieee754.f = p_val;
+	// -----------------------------------
+	// (single-precision floating-point)
+	// NaN : s111 1111 1xxx xxxx xxxx xxxx xxxx xxxx
+	//     : (> 0x7f800000)
+	// where,
+	//   s : sign
+	//   x : non-zero number
+	// -----------------------------------
+	return ((ieee754.u & 0x7fffffff) > 0x7f800000);
+#else
+	return isnan(p_val);
+#endif
+}
+
+// Math::is_inf exists in Godot core, but not in GDExtension...
+inline bool is_inf(double p_val) {
+#ifdef _MSC_VER
+	return !_finite(p_val);
+// use an inline implementation of isinf as a workaround for problematic libstdc++ versions from gcc 5.x era
+#elif defined(__GNUC__) && __GNUC__ < 6
+	union {
+		uint64_t u;
+		double f;
+	} ieee754;
+	ieee754.f = p_val;
+	return ((unsigned)(ieee754.u >> 32) & 0x7fffffff) == 0x7ff00000 && ((unsigned)ieee754.u == 0);
+#else
+	return isinf(p_val);
+#endif
+}
+
+// Math::is_inf exists in Godot core, but not in GDExtension...
+inline bool is_inf(float p_val) {
+#ifdef _MSC_VER
+	return !_finite(p_val);
+// use an inline implementation of isinf as a workaround for problematic libstdc++ versions from gcc 5.x era
+#elif defined(__GNUC__) && __GNUC__ < 6
+	union {
+		uint32_t u;
+		float f;
+	} ieee754;
+	ieee754.f = p_val;
+	return (ieee754.u & 0x7fffffff) == 0x7f800000;
+#else
+	return isinf(p_val);
+#endif
+}
+
+inline double deg_to_rad(double p_y) {
+	return p_y * PI_64 / 180.0;
+}
+
+inline float deg_to_rad(float p_y) {
+	return p_y * PI_32 / 180.f;
 }
 
 } // namespace zylann::math

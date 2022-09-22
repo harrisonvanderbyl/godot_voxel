@@ -2,8 +2,9 @@
 #define VOXEL_INSTANCE_GENERATOR_H
 
 //#include "../../storage/voxel_buffer.h"
+#include "../../util/godot/binder.h"
+#include "../../util/godot/noise.h"
 #include "../../util/math/vector3i.h"
-#include <modules/noise/noise.h>
 
 #include <limits>
 #include <vector>
@@ -112,7 +113,11 @@ public:
 	float get_noise_on_scale() const;
 
 	static inline int get_octant_index(const Vector3 pos, float half_block_size) {
-		return (pos.x > half_block_size) | ((pos.y > half_block_size) << 1) | ((pos.z > half_block_size) << 2);
+		return get_octant_index(pos.x > half_block_size, pos.y > half_block_size, pos.z > half_block_size);
+	}
+
+	static inline int get_octant_index(bool x, bool y, bool z) {
+		return int(x) | (int(y) << 1) | (int(z) << 2);
 	}
 
 private:
@@ -144,8 +149,8 @@ private:
 
 } // namespace zylann::voxel
 
-VARIANT_ENUM_CAST(zylann::voxel::VoxelInstanceGenerator::EmitMode);
-VARIANT_ENUM_CAST(zylann::voxel::VoxelInstanceGenerator::Distribution);
-VARIANT_ENUM_CAST(zylann::voxel::VoxelInstanceGenerator::Dimension);
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelInstanceGenerator, EmitMode);
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelInstanceGenerator, Distribution);
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelInstanceGenerator, Dimension);
 
 #endif // VOXEL_INSTANCE_GENERATOR_H

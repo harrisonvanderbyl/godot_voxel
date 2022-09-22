@@ -1,17 +1,20 @@
 #ifndef VOXEL_GRAPH_EDITOR_H
 #define VOXEL_GRAPH_EDITOR_H
 
+#include "../../generators/graph/voxel_generator_graph.h"
+#include "../../util/godot/control.h"
+#include "../../util/godot/editor_undo_redo_manager.h"
 #include "../voxel_debug.h"
-#include <scene/gui/control.h>
 
-class GraphEdit;
-class PopupMenu;
-class AcceptDialog;
-class UndoRedo;
+ZN_GODOT_FORWARD_DECLARE(class GraphEdit)
+ZN_GODOT_FORWARD_DECLARE(class PopupMenu)
+ZN_GODOT_FORWARD_DECLARE(class AcceptDialog)
+ZN_GODOT_FORWARD_DECLARE(class UndoRedo)
+ZN_GODOT_FORWARD_DECLARE(class Button)
+ZN_GODOT_FORWARD_DECLARE(class Label)
 
 namespace zylann::voxel {
 
-class VoxelGeneratorGraph;
 class VoxelRangeAnalysisDialog;
 class VoxelNode;
 class VoxelGraphEditorShaderDialog;
@@ -23,6 +26,8 @@ public:
 	static const char *SIGNAL_NODE_SELECTED;
 	static const char *SIGNAL_NOTHING_SELECTED;
 	static const char *SIGNAL_NODES_DELETED;
+	static const char *SIGNAL_REGENERATE_REQUESTED;
+	static const char *SIGNAL_POPOUT_REQUESTED;
 
 	VoxelGraphEditor();
 
@@ -31,16 +36,23 @@ public:
 		return _graph;
 	}
 
-	void set_undo_redo(UndoRedo *undo_redo);
+	void set_undo_redo(Ref<EditorUndoRedoManager> undo_redo);
 	void set_voxel_node(VoxelNode *node);
 
 	// To be called when the number of inputs in a node changes.
 	// Rebuilds the node's internal controls, and updates GUI connections going to it from the graph.
 	void update_node_layout(uint32_t node_id);
 
+	bool is_pinned_hint() const;
+	void set_popout_button_enabled(bool enable);
+
+#ifdef ZN_GODOT_EXTENSION
+	void _process(double delta) override;
+#endif
+
 private:
 	void _notification(int p_what);
-	void _process(float delta);
+	void process(float delta);
 
 	void clear();
 	void build_gui_from_graph();
@@ -59,9 +71,19 @@ private:
 	void _on_graph_edit_gui_input(Ref<InputEvent> event);
 	void _on_graph_edit_connection_request(String from_node_name, int from_slot, String to_node_name, int to_slot);
 	void _on_graph_edit_disconnection_request(String from_node_name, int from_slot, String to_node_name, int to_slot);
+
+#if defined(ZN_GODOT)
 	void _on_graph_edit_delete_nodes_request(TypedArray<StringName> node_names);
 	void _on_graph_edit_node_selected(Node *p_node);
 	void _on_graph_edit_node_deselected(Node *p_node);
+#elif defined(ZN_GODOT_EXTENSION)
+	// TODO GDX: TypedArray isn't available.
+	void _on_graph_edit_delete_nodes_request(Array node_names);
+	// TODO GDX: Can't bind methods taking a child class of `Object*`
+	void _on_graph_edit_node_selected(Object *p_node_o);
+	void _on_graph_edit_node_deselected(Object *p_node_o);
+#endif
+
 	void _on_graph_node_dragged(Vector2 from, Vector2 to, int id);
 	void _on_context_menu_id_pressed(int id);
 	void _on_update_previews_button_pressed();
@@ -74,6 +96,7 @@ private:
 	void _on_preview_axes_menu_id_pressed(int id);
 	void _on_generate_shader_button_pressed();
 	void _on_live_update_toggled(bool enabled);
+	void _on_popout_button_pressed();
 
 	void _check_nothing_selected();
 
@@ -86,7 +109,10 @@ private:
 	Label *_profile_label = nullptr;
 	Label *_compile_result_label = nullptr;
 	VoxelRangeAnalysisDialog *_range_analysis_dialog = nullptr;
-	UndoRedo *_undo_redo = nullptr;
+	// TODO Not sure if using `EditorUndoRedoManager` directly is the right thing to do?
+	// VisualShader did it that way when this manager got introduced in place of the old global UndoRedo...
+	// there doesn't seem to be any documentation yet for this class
+	Ref<EditorUndoRedoManager> _undo_redo = nullptr;
 	Vector2 _click_position;
 	bool _nothing_selected_check_scheduled = false;
 	float _time_before_preview_update = 0.f;
@@ -95,6 +121,8 @@ private:
 	VoxelGraphEditorShaderDialog *_shader_dialog = nullptr;
 	bool _live_update_enabled = false;
 	uint64_t _last_output_graph_hash = 0;
+	Button *_pin_button = nullptr;
+	Button *_popout_button = nullptr;
 
 	enum PreviewAxes { //
 		PREVIEW_XY = 0,

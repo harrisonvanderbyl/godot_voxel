@@ -1,11 +1,10 @@
 #include "voxel_mesher_dmc.h"
 #include "../../constants/cube_tables.h"
+#include "../../util/godot/time.h"
 #include "../../util/math/conv.h"
 #include "marching_cubes_tables.h"
 #include "mesh_builder.h"
 #include "octree_tables.h"
-
-#include <core/os/time.h>
 
 // Dual marching cubes
 // Algorithm taken from https://www.volume-gfx.com/volume-rendering/dual-marching-cubes/
@@ -17,7 +16,6 @@ namespace zylann::voxel::dmc {
 const float SURFACE_ISO_LEVEL = 0.0;
 
 const float NEAR_SURFACE_FACTOR = 2.0;
-const float SQRT3 = 1.7320508075688772;
 
 // Helper to access padded voxel data
 struct VoxelAccess {
@@ -51,7 +49,7 @@ bool can_split(Vector3i node_origin, int node_size, const VoxelAccess &voxels, f
 	// Don't split if nothing is inside, i.e isolevel distance is greater than the size of the cube we are in
 	Vector3i center_pos = node_origin + Vector3iUtil::create(node_size / 2);
 	HermiteValue center_value = voxels.get_hermite_value(center_pos.x, center_pos.y, center_pos.z);
-	if (Math::abs(center_value.sdf) > SQRT3 * (float)node_size) {
+	if (Math::abs(center_value.sdf) > constants::SQRT3 * (float)node_size) {
 		return false;
 	}
 
@@ -141,7 +139,7 @@ bool can_split(Vector3i node_origin, int node_size, const VoxelAccess &voxels, f
 }
 
 inline Vector3f get_center(const OctreeNode *node) {
-	return to_vec3f(node->origin) + 0.5 * Vector3f(node->size, node->size, node->size);
+	return to_vec3f(node->origin) + 0.5f * Vector3f(node->size, node->size, node->size);
 }
 
 class OctreeBuilderTopDown {
@@ -275,8 +273,10 @@ void foreach_node(OctreeNode *root, Action_T &a, int depth = 0) {
 
 inline void scale_positions(PackedVector3Array &positions, float scale) {
 	const uint32_t size = positions.size();
+	// Using direct access because in GDExtension accessing with `[]` has different syntax than modules
+	Vector3 *positions_data = positions.ptrw();
 	for (unsigned int i = 0; i < size; ++i) {
-		positions.write[i] *= scale;
+		positions_data[i] *= scale;
 	}
 }
 
@@ -783,7 +783,7 @@ inline bool is_surface_near(OctreeNode *node) {
 	if (node->center_value.sdf == 0) {
 		return true;
 	}
-	return Math::abs(node->center_value.sdf) < node->size * SQRT3 * NEAR_SURFACE_FACTOR;
+	return Math::abs(node->center_value.sdf) < node->size * constants::SQRT3 * NEAR_SURFACE_FACTOR;
 }
 
 void DualGridGenerator::vert_proc(OctreeNode *n0, OctreeNode *n1, OctreeNode *n2, OctreeNode *n3, OctreeNode *n4,
@@ -1407,7 +1407,8 @@ void VoxelMesherDMC::build(VoxelMesher::Output &output, const VoxelMesher::Input
 
 	const Vector3i buffer_size = voxels.get_size();
 	// Taking previous power of two because the algorithm uses an integer cubic octree, and data should be padded
-	const int chunk_size = previous_power_of_2(MIN(MIN(buffer_size.x, buffer_size.y), buffer_size.z));
+	const int chunk_size =
+			math::get_previous_power_of_two_32(math::min(math::min(buffer_size.x, buffer_size.y), buffer_size.z));
 
 	ERR_FAIL_COND(voxels.get_size().x < chunk_size + PADDING * 2);
 	ERR_FAIL_COND(voxels.get_size().y < chunk_size + PADDING * 2);
@@ -1472,7 +1473,7 @@ void VoxelMesherDMC::build(VoxelMesher::Output &output, const VoxelMesher::Input
 
 	if (root != nullptr) {
 		if (params.mesh_mode == MESH_DEBUG_OCTREE) {
-			surface = dmc::generate_debug_octree_mesh(root, 1 << input.lod);
+			surface = dmc::generate_debug_octree_mesh(root, 1 << input.lod_index);
 
 		} else {
 			time_before = Time::get_singleton()->get_ticks_usec();
@@ -1484,7 +1485,7 @@ void VoxelMesherDMC::build(VoxelMesher::Output &output, const VoxelMesher::Input
 			stats.dualgrid_derivation_time = Time::get_singleton()->get_ticks_usec() - time_before;
 
 			if (params.mesh_mode == MESH_DEBUG_DUAL_GRID) {
-				surface = dmc::generate_debug_dual_grid_mesh(cache.dual_grid, 1 << input.lod);
+				surface = dmc::generate_debug_dual_grid_mesh(cache.dual_grid, 1 << input.lod_index);
 
 			} else {
 				time_before = Time::get_singleton()->get_ticks_usec();
@@ -1508,8 +1509,8 @@ void VoxelMesherDMC::build(VoxelMesher::Output &output, const VoxelMesher::Input
 
 	if (surface.is_empty()) {
 		time_before = Time::get_singleton()->get_ticks_usec();
-		if (input.lod > 0) {
-			cache.mesh_builder.scale(1 << input.lod);
+		if (input.lod_index > 0) {
+			cache.mesh_builder.scale(1 << input.lod_index);
 		}
 		surface = cache.mesh_builder.commit(params.mesh_mode == MESH_WIREFRAME);
 		stats.commit_time = Time::get_singleton()->get_ticks_usec() - time_before;
@@ -1518,6 +1519,7 @@ void VoxelMesherDMC::build(VoxelMesher::Output &output, const VoxelMesher::Input
 	// surfaces[material][array_type], for now single material
 	Output::Surface output_surface;
 	output_surface.arrays = surface;
+	output_surface.material_index = 0;
 	output.surfaces.push_back(output_surface);
 
 	if (params.mesh_mode == MESH_NORMAL) {

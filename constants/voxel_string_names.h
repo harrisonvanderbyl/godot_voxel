@@ -1,7 +1,7 @@
 #ifndef VOXEL_STRING_NAMES_H
 #define VOXEL_STRING_NAMES_H
 
-#include <core/string/string_name.h>
+#include "../util/godot/string_name.h"
 
 namespace zylann::voxel {
 
@@ -33,8 +33,30 @@ public:
 	StringName u_block_local_transform;
 	StringName u_lod_fade;
 
+	StringName voxel_normalmap_atlas;
+	StringName voxel_normalmap_lookup;
+
+	StringName u_voxel_normalmap_atlas;
+	StringName u_voxel_cell_lookup;
+	StringName u_voxel_cell_size;
+	StringName u_voxel_block_size;
+	StringName u_voxel_virtual_texture_fade;
+	StringName u_voxel_virtual_texture_tile_size;
+
 #ifdef DEBUG_ENABLED
 	StringName _voxel_debug_vt_position;
+#endif
+
+	// These are usually in CoreStringNames, but when compiling as a GDExtension, we don't have access to them
+	StringName changed;
+	StringName frame_post_draw;
+
+#ifdef TOOLS_ENABLED
+	StringName Add;
+	StringName Remove;
+	StringName EditorIcons;
+	StringName Pin;
+	StringName ExternalLink;
 #endif
 };
 

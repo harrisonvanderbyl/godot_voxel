@@ -1,84 +1,26 @@
-Import('env')
-Import('env_modules')
 
-# Note, support for FastNoise2 requires C++17, and doesn't work yet on ARM.
+# This is the entry point for SCons to build this engine as a module.
+# It has to be integrated to Godot's codebase, so it cannot be run on its own, see `README` for more information.
+# To build as an extension, see `SConstruct`.
+
+Import("env")
+Import("env_modules")
+
+import common
+
+# Note, support for FastNoise2 requires C++17, and only works on x86.
 FAST_NOISE_2_SRC = env["voxel_fast_noise_2"]
+if not env["arch"].startswith("x86"):
+	FAST_NOISE_2_SRC = False
 
 RUN_TESTS = env["voxel_tests"]
 
 env_voxel = env_modules.Clone()
 
-voxel_files = [
-	"*.cpp",
-	
-	"constants/*.cpp",
-
-	"meshers/blocky/*.cpp",
-	"meshers/transvoxel/*.cpp",
-	"meshers/dmc/*.cpp",
-	"meshers/cubes/*.cpp",
-	"meshers/*.cpp",
-
-	"streams/*.cpp",
-	"streams/sqlite/*.cpp",
-	"streams/region/*.cpp",
-
-	"storage/*.cpp",
-
-	"generators/*.cpp",
-	"generators/graph/*.cpp",
-	"generators/simple/*.cpp",
-
-	"util/*.cpp",
-
-	"util/math/*.cpp",
-
-	"util/godot/*.cpp",
-
-	"util/noise/fast_noise_lite/*.cpp",
-	"util/noise/gd_noise_range.cpp",
-
-	"util/thread/*.cpp",
-
-	"util/tasks/*.cpp",
-	"util/tasks/godot/*.cpp",
-
-	"terrain/*.cpp",
-	"terrain/instancing/*.cpp",
-	"terrain/fixed_lod/*.cpp",
-	"terrain/variable_lod/*.cpp",
-
-	"server/*.cpp",
-	"edition/*.cpp",
-
-	"thirdparty/lz4/*.c",
-	"thirdparty/sqlite/*.c",
-	"thirdparty/meshoptimizer/*.cpp"
-]
-
-if env["tools"]:
-	# Editor-only stuff
-	voxel_editor_files = [
-		"editor/*.cpp",
-		"editor/graph/*.cpp",
-		"editor/terrain/*.cpp",
-		"editor/fast_noise_lite/*.cpp",
-		"editor/instancer/*.cpp",
-		"editor/instance_library/*.cpp",
-		"editor/vox/*.cpp",
-		"editor/mesh_sdf/*.cpp",
-	]
-	voxel_files += voxel_editor_files
+voxel_files = common.get_sources(env_voxel)
 
 env_voxel.Append(CPPDEFINES=[
-	# See https://github.com/zeux/meshoptimizer/issues/311
-	"MESHOPTIMIZER_ZYLANN_NEVER_COLLAPSE_BORDERS",
-	# Because of the above, the MeshOptimizer library in this module is different to an official one.
-	# Godot 4 includes an official version, which means they would both conflict at linking time.
-	# To prevent this clash we wrap the entire library within an additional namespace.
-	# This should be solved either by solving issue #311 or by porting the module to a dynamic library (GDExtension).
-	"MESHOPTIMIZER_ZYLANN_WRAP_LIBRARY_IN_NAMESPACE",
-	# Tell engine-agnostic code we are using Godot Engine
+	# Tell engine-agnostic code we are using Godot Engine as a module
 	"ZN_GODOT"
 ])
 
@@ -87,13 +29,6 @@ if RUN_TESTS:
 		"tests/*.cpp"
 	]
 	env_voxel.Append(CPPDEFINES={"VOXEL_RUN_TESTS": 0})
-
-if env["platform"] == "windows":
-	# When compiling SQLite with Godot on Windows with MSVC, it produces the following warning:
-	# `sqlite3.c(42754): warning C4996: 'GetVersionExA': was declared deprecated `
-	# To fix it, let's indicate to SQLite it should not use this function, even if it is available.
-	# https://stackoverflow.com/questions/20031597/error-c4996-received-when-compiling-sqlite-c-in-visual-studio-2013
-	env_voxel.Append(CPPDEFINES={"SQLITE_WIN32_GETVERSIONEX": 0})
 
 # ----------------------------------------------------------------------------------------------------------------------
 # FastNoise 2
@@ -106,7 +41,7 @@ if FAST_NOISE_2_SRC:
 		env_voxel.Append(CXXFLAGS=["-Wno-unknown-pragmas"])
 	
 	# Build from source. Should be the simplest, but requires C++17
-	SConscript('thirdparty/fast_noise_2/SConscript', exports = ["env", "env_voxel"])
+	SConscript("thirdparty/fast_noise_2/SConscript", exports = ["env", "env_voxel"])
 
 	env_voxel.Append(CPPPATH=["thirdparty/fast_noise_2/include"])
 	
@@ -126,13 +61,14 @@ for f in voxel_files:
 
 # TODO Check webassembly builds (`env["platform"] == "javascript"`)
 
+# TODO Can this be removed now?
 # Ignored clang warnings because Godot's codebase is old and isn't using override yet
-if env['platform'] in ['osx', 'android']:
-	env_voxel.Append(CXXFLAGS=['-Wno-inconsistent-missing-override'])
+if env["platform"] in ["osx", "android"]:
+	env_voxel.Append(CXXFLAGS=["-Wno-inconsistent-missing-override"])
 
 # Doesn't work, since the rest of Godot doesn't use this, linking fails.
 # No safe STL boundary checks for you.
-#if env['target'] == 'debug':
+#if env["target"] == "debug":
 #	if env.msvc:
 #		# Enable STL bound checks, Godot's master environment doesn't do it
-#		env_voxel.Append(CXXFLAGS=['/D_DEBUG'])
+#		env_voxel.Append(CXXFLAGS=["/D_DEBUG"])

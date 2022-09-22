@@ -1,10 +1,13 @@
 #ifndef VOXEL_MESHER_TRANSVOXEL_H
 #define VOXEL_MESHER_TRANSVOXEL_H
 
+#include "../../util/godot/binder.h"
+#include "../../util/macros.h"
 #include "../voxel_mesher.h"
 #include "transvoxel.h"
 
-class ArrayMesh;
+ZN_GODOT_FORWARD_DECLARE(class ArrayMesh);
+ZN_GODOT_FORWARD_DECLARE(class ShaderMaterial);
 
 namespace zylann::voxel {
 
@@ -27,7 +30,6 @@ public:
 	void build(VoxelMesher::Output &output, const VoxelMesher::Input &input) override;
 	Ref<ArrayMesh> build_transition_mesh(Ref<gd::VoxelBuffer> voxels, int direction);
 
-	Ref<Resource> duplicate(bool p_subresources = false) const override;
 	int get_used_channels_mask() const override;
 
 	bool is_generating_collision_surface() const override;
@@ -52,8 +54,16 @@ public:
 
 	Ref<ShaderMaterial> get_default_lod_material() const override;
 
+	// Internal
+
 	static void load_static_resources();
 	static void free_static_resources();
+
+	// Exposed for a fast-path. Return values are only valid until the next invocation of build() in the calling thread.
+	static const transvoxel::MeshArrays &get_mesh_cache_from_current_thread();
+	// Exposed for a fast-path. Return values are only valid if `virtual_texture_hint` is true in the input given to
+	// `build`, and only remains valid until the next invocation of build() in the calling thread.
+	static Span<const transvoxel::CellInfo> get_cell_info_from_current_thread();
 
 	// Not sure if that's necessary, currently transitions are either combined or not generated
 	// enum TransitionMode {
@@ -89,6 +99,6 @@ private:
 
 } // namespace zylann::voxel
 
-VARIANT_ENUM_CAST(zylann::voxel::VoxelMesherTransvoxel::TexturingMode);
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelMesherTransvoxel, TexturingMode);
 
 #endif // VOXEL_MESHER_TRANSVOXEL_H

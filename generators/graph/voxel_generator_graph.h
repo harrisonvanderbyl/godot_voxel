@@ -1,6 +1,8 @@
 #ifndef VOXEL_GENERATOR_GRAPH_H
 #define VOXEL_GENERATOR_GRAPH_H
 
+#include "../../util/godot/binder.h"
+#include "../../util/macros.h"
 #include "../../util/thread/rw_lock.h"
 #include "../voxel_generator.h"
 #include "program_graph.h"
@@ -8,7 +10,7 @@
 
 #include <memory>
 
-class Image;
+ZN_GODOT_FORWARD_DECLARE(class Image)
 
 namespace zylann::voxel {
 
@@ -74,6 +76,7 @@ public:
 		NODE_EXPRESSION,
 		NODE_POWI, // pow(x, constant positive integer)
 		NODE_POW, // pow(x, y)
+		NODE_INPUT_SDF,
 
 		NODE_TYPE_COUNT
 	};
@@ -123,6 +126,9 @@ public:
 	Variant get_node_default_input(uint32_t node_id, uint32_t input_index) const;
 	void set_node_default_input(uint32_t node_id, uint32_t input_index, Variant value);
 
+	bool get_node_default_inputs_autoconnect(uint32_t node_id) const;
+	void set_node_default_inputs_autoconnect(uint32_t node_id, bool enabled);
+
 	Vector2 get_node_gui_position(uint32_t node_id) const;
 	void set_node_gui_position(uint32_t node_id, Vector2 pos);
 
@@ -132,7 +138,7 @@ public:
 		return _graph.generate_node_id();
 	}
 
-	int get_nodes_count() const;
+	unsigned int get_nodes_count() const;
 
 	void load_plane_preset();
 
@@ -165,9 +171,15 @@ public:
 	bool supports_single_generation() const override {
 		return true;
 	}
+	bool supports_series_generation() const override {
+		return true;
+	}
 	VoxelSingleValue generate_single(Vector3i position, unsigned int channel) override;
 
-	Ref<Resource> duplicate(bool p_subresources) const override;
+	void generate_series(Span<const float> positions_x, Span<const float> positions_y, Span<const float> positions_z,
+			unsigned int channel, Span<float> out_values, Vector3f min_pos, Vector3f max_pos) override;
+
+	Ref<Resource> duplicate(bool p_subresources) const ZN_OVERRIDE_UNLESS_GODOT_EXTENSION;
 
 	// Utility
 
@@ -181,12 +193,14 @@ public:
 	bool is_good() const;
 
 	void generate_set(Span<float> in_x, Span<float> in_y, Span<float> in_z);
+	void generate_series(Span<float> in_x, Span<float> in_y, Span<float> in_z, Span<float> in_sdf);
 
 	// Returns state from the last generator used in the current thread
 	static const VoxelGraphRuntime::State &get_last_state_from_current_thread();
 	static Span<const uint32_t> get_last_execution_map_debug_from_current_thread();
 
 	bool try_get_output_port_address(ProgramGraph::PortLocation port, uint32_t &out_address) const;
+	int get_sdf_output_port_address() const;
 
 	void find_dependencies(uint32_t node_id, std::vector<uint32_t> &out_dependencies) const;
 
@@ -206,7 +220,7 @@ public:
 	// Editor
 
 #ifdef TOOLS_ENABLED
-	void get_configuration_warnings(TypedArray<String> &out_warnings) const override;
+	void get_configuration_warnings(PackedStringArray &out_warnings) const override;
 
 	// Gets a hash that attempts to only change if the output of the graph is different.
 	// This is computed from the editable graph data, not the compiled result.
@@ -297,6 +311,7 @@ private:
 		std::vector<float> x_cache;
 		std::vector<float> y_cache;
 		std::vector<float> z_cache;
+		std::vector<float> input_sdf_cache;
 		VoxelGraphRuntime::State state;
 		VoxelGraphRuntime::ExecutionMap optimized_execution_map;
 	};
@@ -309,6 +324,6 @@ ProgramGraph::Node *create_node_internal(ProgramGraph &graph, VoxelGeneratorGrap
 
 } // namespace zylann::voxel
 
-VARIANT_ENUM_CAST(zylann::voxel::VoxelGeneratorGraph::NodeTypeID)
+ZN_GODOT_VARIANT_ENUM_CAST(zylann::voxel::VoxelGeneratorGraph, NodeTypeID)
 
 #endif // VOXEL_GENERATOR_GRAPH_H

@@ -1,4 +1,6 @@
 
+# This file is for compiling as a module. It may not be used when compiling as an extension.
+
 def can_build(env, platform):
     return True
 
@@ -11,7 +13,7 @@ def configure(env):
     env_vars.Add(BoolVariable("voxel_tests", 
         "Build with tests for the voxel module, which will run on startup of the engine", False))
 
-    env_vars.Add(BoolVariable("voxel_fast_noise_2", "Build FastNoise2 support", True))
+    env_vars.Add(BoolVariable("voxel_fast_noise_2", "Build FastNoise2 support (x86-only)", True))
 
     env_vars.Update(env)
     Help(env_vars.GenerateHelpText(env))
@@ -23,63 +25,57 @@ def get_icons_path():
 
 def get_doc_classes():
     return [
-        "VoxelServer",
-        "ZN_ThreadedTask",
-
-        "Voxel",
-        "VoxelLibrary",
-        "VoxelColorPalette",
-        "VoxelInstanceLibrary",
-        "VoxelInstanceLibraryItem",
-        "VoxelInstanceLibraryItemBase",
-        "VoxelInstanceLibrarySceneItem",
-        "VoxelInstanceGenerator",
-
+        "FastNoise2",
+        "VoxelBlockSerializer",
+        "VoxelBlockyLibrary",
+        "VoxelBlockyModel",
+        "VoxelBoxMover",
         "VoxelBuffer",
-
-        "VoxelNode",
-        "VoxelTerrain",
-        "VoxelLodTerrain",
-        "VoxelViewer",
-        "VoxelInstancer",
-
-        "VoxelStream",
-        "VoxelStreamFile",
-        "VoxelStreamBlockFiles",
-        "VoxelStreamRegionFiles",
-        "VoxelStreamSQLite",
-        "VoxelStreamScript",
-
+        "VoxelColorPalette",
+        "VoxelDataBlockEnterInfo",
+        "VoxelEngine",
         "VoxelGenerator",
         "VoxelGeneratorFlat",
-        "VoxelGeneratorWaves",
+        "VoxelGeneratorGraph",
         "VoxelGeneratorHeightmap",
         "VoxelGeneratorImage",
-        "VoxelGeneratorNoise2D",
         "VoxelGeneratorNoise",
-        "VoxelGeneratorGraph",
+        "VoxelGeneratorNoise2D",
         "VoxelGeneratorScript",
-
-        "VoxelBoxMover",
-        "VoxelRaycastResult",
-        "VoxelTool",
-        "VoxelToolTerrain",
-        "VoxelToolLodTerrain",
-        "VoxelToolBuffer",
-        "VoxelBlockSerializer",
-        "VoxelVoxLoader",
-        "VoxelDataBlockEnterInfo",
-        "VoxelMeshSDF",
-
-        "ZN_FastNoiseLite",
-        "ZN_FastNoiseLiteGradient",
-        "FastNoise2",
-
+        "VoxelGeneratorWaves",
+        "VoxelInstanceComponent",
+        "VoxelInstanceGenerator",
+        "VoxelInstanceLibrary",
+        "VoxelInstanceLibraryItem",
+        "VoxelInstanceLibraryMultiMeshItem",
+        "VoxelInstanceLibrarySceneItem",
+        "VoxelInstancer",
+        "VoxelLodTerrain",
         "VoxelMesher",
         "VoxelMesherBlocky",
-        "VoxelMesherTransvoxel",
+        "VoxelMesherCubes",
         "VoxelMesherDMC",
-        "VoxelMesherCubes"
+        "VoxelMesherTransvoxel",
+        "VoxelMeshSDF",
+        "VoxelModifier",
+        "VoxelModifierMesh",
+        "VoxelModifierSphere",
+        "VoxelNode",
+        "VoxelRaycastResult",
+        "VoxelStream",
+        "VoxelStreamRegionFiles",
+        "VoxelStreamScript",
+        "VoxelStreamSQLite",
+        "VoxelTerrain",
+        "VoxelTool",
+        "VoxelToolBuffer",
+        "VoxelToolLodTerrain",
+        "VoxelToolTerrain",
+        "VoxelViewer",
+        "VoxelVoxLoader",
+        "ZN_FastNoiseLite",
+        "ZN_FastNoiseLiteGradient",
+        "ZN_ThreadedTask",
     ]
 
 

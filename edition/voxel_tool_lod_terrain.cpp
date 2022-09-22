@@ -1,20 +1,22 @@
 #include "voxel_tool_lod_terrain.h"
 #include "../constants/voxel_string_names.h"
+#include "../generators/graph/voxel_generator_graph.h"
 #include "../storage/voxel_buffer_gd.h"
 #include "../storage/voxel_data_grid.h"
 #include "../terrain/variable_lod/voxel_lod_terrain.h"
-#include "../util/godot/funcs.h"
+#include "../util/dstack.h"
+#include "../util/godot/callable.h"
+#include "../util/godot/collision_shape_3d.h"
+#include "../util/godot/mesh.h"
+#include "../util/godot/mesh_instance_3d.h"
+#include "../util/godot/rigid_body_3d.h"
+#include "../util/godot/timer.h"
 #include "../util/island_finder.h"
 #include "../util/math/conv.h"
 #include "../util/tasks/async_dependency_tracker.h"
 #include "../util/voxel_raycast.h"
 #include "funcs.h"
 #include "voxel_mesh_sdf_gd.h"
-
-#include <scene/3d/collision_shape_3d.h>
-#include <scene/3d/mesh_instance_3d.h>
-#include <scene/3d/physics_body_3d.h>
-#include <scene/main/timer.h>
 
 namespace zylann::voxel {
 
@@ -26,23 +28,7 @@ VoxelToolLodTerrain::VoxelToolLodTerrain(VoxelLodTerrain *terrain) : _terrain(te
 
 bool VoxelToolLodTerrain::is_area_editable(const Box3i &box) const {
 	ERR_FAIL_COND_V(_terrain == nullptr, false);
-	return _terrain->is_area_editable(box);
-}
-
-template <typename Volume_F>
-float get_sdf_interpolated(const Volume_F &f, Vector3 pos) {
-	const Vector3i c = math::floor_to_int(pos);
-
-	const float s000 = f(Vector3i(c.x, c.y, c.z));
-	const float s100 = f(Vector3i(c.x + 1, c.y, c.z));
-	const float s010 = f(Vector3i(c.x, c.y + 1, c.z));
-	const float s110 = f(Vector3i(c.x + 1, c.y + 1, c.z));
-	const float s001 = f(Vector3i(c.x, c.y, c.z + 1));
-	const float s101 = f(Vector3i(c.x + 1, c.y, c.z + 1));
-	const float s011 = f(Vector3i(c.x, c.y + 1, c.z + 1));
-	const float s111 = f(Vector3i(c.x + 1, c.y + 1, c.z + 1));
-
-	return math::interpolate_trilinear(s000, s100, s101, s001, s010, s110, s111, s011, to_vec3f(math::fract(pos)));
+	return _terrain->get_storage().is_area_loaded(box);
 }
 
 // Binary search can be more accurate than linear regression because the SDF can be inaccurate in the first place.
@@ -94,17 +80,22 @@ float approximate_distance_to_isosurface_binary_search(
 Ref<VoxelRaycastResult> VoxelToolLodTerrain::raycast(
 		Vector3 pos, Vector3 dir, float max_distance, uint32_t collision_mask) {
 	// TODO Transform input if the terrain is rotated
-	// TODO Implement broad-phase on blocks to minimize locking and increase performance
 	// TODO Implement reverse raycast? (going from inside ground to air, could be useful for undigging)
 
+	// TODO Optimization: voxel raycast uses `get_voxel` which is the slowest, but could be made faster.
+	// Instead, do a broad-phase on blocks. If a block's voxels need to be parsed, get all positions the ray could go
+	// through in that block, then query them all at once (better for bulk processing without going again through
+	// locking and data structures, and allows SIMD). Then check results in order.
+	// If no hit is found, carry on with next blocks.
+
 	struct RaycastPredicate {
-		VoxelLodTerrain *terrain;
+		VoxelData &data;
 
 		bool operator()(const VoxelRaycastState &rs) {
 			// This is not particularly optimized, but runs fast enough for player raycasts
 			VoxelSingleValue defval;
 			defval.f = 1.f;
-			const VoxelSingleValue v = terrain->get_voxel(rs.hit_position, VoxelBufferInternal::CHANNEL_SDF, defval);
+			const VoxelSingleValue v = data.get_voxel(rs.hit_position, VoxelBufferInternal::CHANNEL_SDF, defval);
 			return v.f < 0;
 		}
 	};
@@ -112,7 +103,7 @@ Ref<VoxelRaycastResult> VoxelToolLodTerrain::raycast(
 	Ref<VoxelRaycastResult> res;
 
 	// We use grid-raycast as a middle-phase to roughly detect where the hit will be
-	RaycastPredicate predicate = { _terrain };
+	RaycastPredicate predicate = { _terrain->get_storage() };
 	Vector3i hit_pos;
 	Vector3i prev_pos;
 	float hit_distance;
@@ -141,17 +132,17 @@ Ref<VoxelRaycastResult> VoxelToolLodTerrain::raycast(
 		if (_raycast_binary_search_iterations > 0) {
 			// This is not particularly optimized, but runs fast enough for player raycasts
 			struct VolumeSampler {
-				VoxelLodTerrain *terrain;
+				VoxelData &data;
 
 				inline float operator()(const Vector3i &pos) const {
 					VoxelSingleValue defval;
 					defval.f = 1.f;
-					const VoxelSingleValue value = terrain->get_voxel(pos, VoxelBufferInternal::CHANNEL_SDF, defval);
+					const VoxelSingleValue value = data.get_voxel(pos, VoxelBufferInternal::CHANNEL_SDF, defval);
 					return value.f;
 				}
 			};
 
-			VolumeSampler sampler{ _terrain };
+			VolumeSampler sampler{ _terrain->get_storage() };
 			d = hit_distance_prev +
 					approximate_distance_to_isosurface_binary_search(sampler, pos + dir * hit_distance_prev, dir,
 							hit_distance - hit_distance_prev, _raycast_binary_search_iterations);
@@ -166,120 +157,84 @@ Ref<VoxelRaycastResult> VoxelToolLodTerrain::raycast(
 	return res;
 }
 
-namespace ops {
-
-struct DoSphere {
-	Vector3 center;
-	float radius;
-	VoxelTool::Mode mode;
-	VoxelDataGrid blocks;
-	float sdf_scale;
-	Box3i box;
-	TextureParams texture_params;
-
-	void operator()() {
-		ZN_PROFILE_SCOPE();
-
-		switch (mode) {
-			case VoxelTool::MODE_ADD: {
-				// TODO Support other depths, format should be accessible from the volume
-				SdfOperation16bit<SdfUnion, SdfSphere> op;
-				op.shape.center = center;
-				op.shape.radius = radius;
-				op.shape.scale = sdf_scale;
-				blocks.write_box(box, VoxelBufferInternal::CHANNEL_SDF, op);
-			} break;
-
-			case VoxelTool::MODE_REMOVE: {
-				SdfOperation16bit<SdfSubtract, SdfSphere> op;
-				op.shape.center = center;
-				op.shape.radius = radius;
-				op.shape.scale = sdf_scale;
-				blocks.write_box(box, VoxelBufferInternal::CHANNEL_SDF, op);
-			} break;
-
-			case VoxelTool::MODE_SET: {
-				SdfOperation16bit<SdfSet, SdfSphere> op;
-				op.shape.center = center;
-				op.shape.radius = radius;
-				op.shape.scale = sdf_scale;
-				blocks.write_box(box, VoxelBufferInternal::CHANNEL_SDF, op);
-			} break;
-
-			case VoxelTool::MODE_TEXTURE_PAINT: {
-				blocks.write_box_2(box, VoxelBufferInternal::CHANNEL_INDICES, VoxelBufferInternal::CHANNEL_WEIGHTS,
-						TextureBlendSphereOp{ center, radius, texture_params });
-			} break;
-
-			default:
-				ERR_PRINT("Unknown mode");
-				break;
-		}
-	}
-};
-
-} //namespace ops
-
 void VoxelToolLodTerrain::do_sphere(Vector3 center, float radius) {
 	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(_terrain == nullptr);
 
-	const Box3i box = Box3i::from_min_max( //
-			math::floor_to_int(center - Vector3(radius, radius, radius)),
-			math::ceil_to_int(center + Vector3(radius, radius, radius)))
-							  // That padding is for SDF to have some margin
-							  .padded(2)
-							  .clipped(_terrain->get_voxel_bounds());
+	ops::DoSphere op;
+	op.shape.center = center;
+	op.shape.radius = radius;
+	op.shape.sdf_scale = get_sdf_scale();
+	op.box = op.shape.get_box().clipped(_terrain->get_voxel_bounds());
+	op.mode = ops::Mode(get_mode());
+	op.texture_params = _texture_params;
+	op.blocky_value = _value;
+	op.channel = get_channel();
+	op.strength = get_sdf_strength();
 
-	if (!is_area_editable(box)) {
+	if (!is_area_editable(op.box)) {
 		ZN_PRINT_VERBOSE("Area not editable");
 		return;
 	}
 
-	std::shared_ptr<VoxelDataLodMap> data = _terrain->get_storage();
-	ERR_FAIL_COND(data == nullptr);
-	VoxelDataLodMap::Lod &data_lod = data->lods[0];
+	VoxelData &data = _terrain->get_storage();
 
-	preload_box(*data, box, _terrain->get_generator().ptr(), !_terrain->is_full_load_mode_enabled());
+	data.pre_generate_box(op.box);
+	data.get_blocks_grid(op.blocks, op.box, 0);
+	op();
 
-	ops::DoSphere op;
-	op.box = box;
-	op.center = center;
-	op.mode = get_mode();
-	op.radius = radius;
-	op.sdf_scale = get_sdf_scale();
+	_post_edit(op.box);
+}
+
+void VoxelToolLodTerrain::do_hemisphere(Vector3 center, float radius, Vector3 flat_direction, float smoothness) {
+	ZN_PROFILE_SCOPE();
+	ERR_FAIL_COND(_terrain == nullptr);
+
+	ops::DoHemisphere op;
+	op.shape.center = center;
+	op.shape.radius = radius;
+	op.shape.flat_direction = flat_direction;
+	op.shape.plane_d = flat_direction.dot(center);
+	op.shape.smoothness = smoothness;
+	op.shape.sdf_scale = get_sdf_scale();
+	op.box = op.shape.get_box().clipped(_terrain->get_voxel_bounds());
+	op.mode = ops::Mode(get_mode());
 	op.texture_params = _texture_params;
-	{
-		RWLockRead rlock(data_lod.map_lock);
-		op.blocks.reference_area(data_lod.map, box);
-		op();
+	op.blocky_value = _value;
+	op.channel = get_channel();
+	op.strength = get_sdf_strength();
+
+	if (!is_area_editable(op.box)) {
+		ZN_PRINT_VERBOSE("Area not editable");
+		return;
 	}
 
-	_post_edit(box);
+	VoxelData &data = _terrain->get_storage();
+
+	data.pre_generate_box(op.box);
+	data.get_blocks_grid(op.blocks, op.box, 0);
+	op();
+
+	_post_edit(op.box);
 }
 
 template <typename Op_T>
 class VoxelToolAsyncEdit : public IThreadedTask {
 public:
-	VoxelToolAsyncEdit(Op_T op, std::shared_ptr<VoxelDataLodMap> data) : _op(op), _data(data) {
+	VoxelToolAsyncEdit(Op_T op, std::shared_ptr<VoxelData> data) : _op(op), _data(data) {
 		_tracker = make_shared_instance<AsyncDependencyTracker>(1);
 	}
 
 	void run(ThreadedTaskContext ctx) override {
 		ZN_PROFILE_SCOPE();
-		CRASH_COND(_data == nullptr);
-		VoxelDataLodMap::Lod &data_lod = _data->lods[0];
-		{
-			// TODO Prefer a spatial lock?
-			// We want blocks inside the edited area to not be accessed by other threads,
-			// but this locks the entire map, not just our area. If we used a spatial lock we would only need to lock
-			// the map for the duration of `reference_area`.
-			RWLockRead rlock(data_lod.map_lock);
-			// TODO May want to fail if not all blocks were found
-			_op.blocks.reference_area(data_lod.map, _op.box);
-			// TODO Need to apply modifiers
-			_op();
-		}
+		ZN_ASSERT(_data != nullptr);
+		// TODO Thread-safety: not sure if this is entirely safe, VoxelDataBlock members aren't protected.
+		// Only the map and VoxelBuffers are. To fix this we could migrate to a spatial lock.
+
+		// TODO May want to fail if not all blocks were found
+		// TODO Need to apply modifiers
+		_data->get_blocks_grid(_op.blocks, _op.box, 0);
+		_op();
 		_tracker->post_complete();
 	}
 
@@ -290,35 +245,30 @@ public:
 private:
 	Op_T _op;
 	// We reference this just to keep map pointers alive
-	std::shared_ptr<VoxelDataLodMap> _data;
+	std::shared_ptr<VoxelData> _data;
 	std::shared_ptr<AsyncDependencyTracker> _tracker;
 };
 
 void VoxelToolLodTerrain::do_sphere_async(Vector3 center, float radius) {
 	ERR_FAIL_COND(_terrain == nullptr);
 
-	const Box3i box = Box3i(math::floor_to_int(center) - Vector3iUtil::create(Math::floor(radius)),
-			Vector3iUtil::create(Math::ceil(radius) * 2))
-							  .clipped(_terrain->get_voxel_bounds());
+	ops::DoSphere op;
+	op.shape.center = center;
+	op.shape.radius = radius;
+	op.shape.sdf_scale = get_sdf_scale();
+	op.box = op.shape.get_box().clipped(_terrain->get_voxel_bounds());
+	op.mode = ops::Mode(get_mode());
+	op.texture_params = _texture_params;
+	op.blocky_value = _value;
+	op.channel = get_channel();
+	op.strength = get_sdf_strength();
 
-	if (!is_area_editable(box)) {
+	if (!is_area_editable(op.box)) {
 		ZN_PRINT_VERBOSE("Area not editable");
 		return;
 	}
 
-	std::shared_ptr<VoxelDataLodMap> data = _terrain->get_storage();
-	ERR_FAIL_COND(data == nullptr);
-
-	ops::DoSphere op;
-	op.box = box;
-	op.center = center;
-	op.mode = get_mode();
-	op.radius = radius;
-	op.sdf_scale = get_sdf_scale();
-	op.texture_params = _texture_params;
-
-	// TODO How do I use unique_ptr with Godot's memnew/memdelete instead?
-	// (without having to mention it everywhere I pass this around)
+	std::shared_ptr<VoxelData> data = _terrain->get_storage_shared();
 
 	VoxelToolAsyncEdit<ops::DoSphere> *task = memnew(VoxelToolAsyncEdit<ops::DoSphere>(op, data));
 	_terrain->push_async_edit(task, op.box, task->get_tracker());
@@ -330,19 +280,20 @@ void VoxelToolLodTerrain::copy(Vector3i pos, Ref<gd::VoxelBuffer> dst, uint8_t c
 	if (channels_mask == 0) {
 		channels_mask = (1 << _channel);
 	}
-	_terrain->copy(pos, dst->get_buffer(), channels_mask);
+	_terrain->get_storage().copy(pos, dst->get_buffer(), channels_mask);
 }
 
 float VoxelToolLodTerrain::get_voxel_f_interpolated(Vector3 position) const {
+	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND_V(_terrain == nullptr, 0);
 	const int channel = get_channel();
-	VoxelLodTerrain *terrain = _terrain;
+	VoxelData &data = _terrain->get_storage();
 	// TODO Optimization: is it worth a making a fast-path for this?
 	return get_sdf_interpolated(
-			[terrain, channel](Vector3i ipos) {
+			[&data, channel](Vector3i ipos) {
 				VoxelSingleValue defval;
 				defval.f = 1.f;
-				VoxelSingleValue value = terrain->get_voxel(ipos, channel, defval);
+				VoxelSingleValue value = data.get_voxel(ipos, channel, defval);
 				return value.f;
 			},
 			position);
@@ -352,25 +303,27 @@ uint64_t VoxelToolLodTerrain::_get_voxel(Vector3i pos) const {
 	ERR_FAIL_COND_V(_terrain == nullptr, 0);
 	VoxelSingleValue defval;
 	defval.i = 0;
-	return _terrain->get_voxel(pos, _channel, defval).i;
+	return _terrain->get_storage().get_voxel(pos, _channel, defval).i;
 }
 
 float VoxelToolLodTerrain::_get_voxel_f(Vector3i pos) const {
 	ERR_FAIL_COND_V(_terrain == nullptr, 0);
 	VoxelSingleValue defval;
 	defval.f = 1.f;
-	return _terrain->get_voxel(pos, _channel, defval).f;
+	return _terrain->get_storage().get_voxel(pos, _channel, defval).f;
 }
 
 void VoxelToolLodTerrain::_set_voxel(Vector3i pos, uint64_t v) {
 	ERR_FAIL_COND(_terrain == nullptr);
-	_terrain->try_set_voxel_without_update(pos, _channel, v);
+	_terrain->get_storage().try_set_voxel(v, pos, _channel);
+	// No post_update, the parent class does it, it's a generic slow implemntation
 }
 
 void VoxelToolLodTerrain::_set_voxel_f(Vector3i pos, float v) {
 	ERR_FAIL_COND(_terrain == nullptr);
 	// TODO Format should be accessible from terrain
-	_terrain->try_set_voxel_without_update(pos, _channel, snorm_to_s16(v));
+	_terrain->get_storage().try_set_voxel_f(v, pos, _channel);
+	// No post_update, the parent class does it, it's a generic slow implemntation
 }
 
 void VoxelToolLodTerrain::_post_edit(const Box3i &box) {
@@ -403,7 +356,7 @@ Array separate_floating_chunks(VoxelTool &voxel_tool, Box3i world_box, Node *par
 
 	// TODO Do not assume channel, at the moment it's hardcoded for smooth terrain
 	static const int channels_mask = (1 << VoxelBufferInternal::CHANNEL_SDF);
-	static const int main_channel = VoxelBufferInternal::CHANNEL_SDF;
+	static const VoxelBufferInternal::ChannelId main_channel = VoxelBufferInternal::CHANNEL_SDF;
 
 	// TODO We should be able to use `VoxelBufferInternal`, just needs some things exposed
 	Ref<gd::VoxelBuffer> source_copy_buffer_ref;
@@ -634,17 +587,20 @@ Array separate_floating_chunks(VoxelTool &voxel_tool, Box3i world_box, Node *par
 			for (int i = 0; i < materials.size(); ++i) {
 				Ref<ShaderMaterial> sm = materials[i];
 				if (sm.is_valid() && sm->get_shader().is_valid() &&
-						sm->get_shader()->has_param(VoxelStringNames::get_singleton().u_block_local_transform)) {
+						sm->get_shader()->has_parameter(VoxelStringNames::get_singleton().u_block_local_transform)) {
 					// That parameter should have a valid default value matching the local transform relative to the
 					// volume, which is usually per-instance, but in Godot 3 we have no such feature, so we have to
 					// duplicate.
 					sm = sm->duplicate(false);
-					sm->set_shader_param(VoxelStringNames::get_singleton().u_block_local_transform, local_transform);
+					sm->set_shader_parameter(
+							VoxelStringNames::get_singleton().u_block_local_transform, local_transform);
 					materials[i] = sm;
 				}
 			}
 
-			Ref<Mesh> mesh = mesher->build_mesh(info.voxels, materials);
+			// TODO If normalmapping is used here with the Transvoxel mesher, we need to either turn it off just for
+			// this call, or to pass the right options
+			Ref<Mesh> mesh = mesher->build_mesh(info.voxels, materials, Dictionary());
 			// The mesh is not supposed to be null,
 			// because we build these buffers from connected groups that had negative SDF.
 			ERR_CONTINUE(mesh.is_null());
@@ -682,10 +638,10 @@ Array separate_floating_chunks(VoxelTool &voxel_tool, Box3i world_box, Node *par
 			const Vector3 offset = -Vector3(size) * 0.5f;
 			collision_shape->set_position(offset);
 
-			RigidDynamicBody3D *rigid_body = memnew(RigidDynamicBody3D);
-			rigid_body->set_transform(transform * local_transform.translated(-offset));
+			RigidBody3D *rigid_body = memnew(RigidBody3D);
+			rigid_body->set_transform(transform * transform3d_translated_local(local_transform, -offset));
 			rigid_body->add_child(collision_shape);
-			rigid_body->set_freeze_mode(RigidDynamicBody3D::FREEZE_MODE_KINEMATIC);
+			rigid_body->set_freeze_mode(RigidBody3D::FREEZE_MODE_KINEMATIC);
 			rigid_body->set_freeze_enabled(true);
 
 			// Switch to rigid after a short time to workaround clipping with terrain,
@@ -693,7 +649,12 @@ Array separate_floating_chunks(VoxelTool &voxel_tool, Box3i world_box, Node *par
 			Timer *timer = memnew(Timer);
 			timer->set_wait_time(0.2);
 			timer->set_one_shot(true);
-			timer->connect("timeout", callable_mp(rigid_body, &RigidDynamicBody3D::set_freeze_enabled), varray(false));
+#if defined(ZN_GODOT)
+			timer->connect("timeout", ZN_GODOT_CALLABLE_MP(rigid_body, RigidBody3D, set_freeze_enabled).bind(false));
+#elif defined(ZN_GODOT_EXTENSION)
+			// TODO GDX: Callable::bind() cannot be used
+			ZN_PRINT_ERROR("Callable::bind() cannot be used in GDExtension, can't apply clipping fix to RigidBody3D");
+#endif
 			// Cannot use start() here because it requires to be inside the SceneTree,
 			// and we don't know if it will be after we add to the parent.
 			timer->set_autostart(true);
@@ -713,7 +674,12 @@ Array separate_floating_chunks(VoxelTool &voxel_tool, Box3i world_box, Node *par
 	return nodes;
 }
 
+#if defined(ZN_GODOT)
 Array VoxelToolLodTerrain::separate_floating_chunks(AABB world_box, Node *parent_node) {
+#elif defined(ZN_GODOT_EXTENSION)
+Array VoxelToolLodTerrain::separate_floating_chunks(AABB world_box, Object *parent_node_o) {
+	Node *parent_node = Object::cast_to<Node>(parent_node_o);
+#endif
 	ERR_FAIL_COND_V(_terrain == nullptr, Array());
 	ERR_FAIL_COND_V(!math::is_valid_size(world_box.size), Array());
 	Ref<VoxelMesher> mesher = _terrain->get_mesher();
@@ -764,11 +730,9 @@ void VoxelToolLodTerrain::stamp_sdf(
 		return;
 	}
 
-	std::shared_ptr<VoxelDataLodMap> data = _terrain->get_storage();
-	ERR_FAIL_COND(data == nullptr);
-	VoxelDataLodMap::Lod &data_lod = data->lods[0];
+	VoxelData &data = _terrain->get_storage();
 
-	preload_box(*data, voxel_box, _terrain->get_generator().ptr(), !_terrain->is_full_load_mode_enabled());
+	data.pre_generate_box(voxel_box);
 
 	// TODO Maybe more efficient to "rasterize" the box? We're going to iterate voxels the box doesnt intersect
 	// TODO Maybe we should scale SDF values based on the scale of the transform too
@@ -788,13 +752,132 @@ void VoxelToolLodTerrain::stamp_sdf(
 	ZN_ASSERT_RETURN(buffer.get_channel_data(channel, op.shape.buffer));
 
 	VoxelDataGrid grid;
-	{
-		RWLockRead rlock(data_lod.map_lock);
-		grid.reference_area(data_lod.map, voxel_box);
-		grid.write_box(voxel_box, VoxelBufferInternal::CHANNEL_SDF, op);
-	}
+	data.get_blocks_grid(grid, voxel_box, 0);
+	grid.write_box(voxel_box, VoxelBufferInternal::CHANNEL_SDF, op);
 
 	_post_edit(voxel_box);
+}
+
+// Runs the given graph in a bounding box in the terrain.
+// The graph must have an SDF output and can also have an SDF input to read source voxels.
+// The transform contains the position of the edit, its orientation and scale.
+// Graph base size is the original size of the brush, as designed in the graph. It will be scaled using the transform.
+void VoxelToolLodTerrain::do_graph(Ref<VoxelGeneratorGraph> graph, Transform3D transform, Vector3 graph_base_size) {
+	ZN_PROFILE_SCOPE();
+	ZN_DSTACK();
+	ERR_FAIL_COND(_terrain == nullptr);
+
+	const Vector3 area_size = math::abs(transform.basis.xform(graph_base_size));
+
+	const Box3i box = Box3i::from_min_max( //
+			math::floor_to_int(transform.origin - 0.5 * area_size),
+			math::ceil_to_int(transform.origin + 0.5 * area_size))
+							  .padded(2)
+							  .clipped(_terrain->get_voxel_bounds());
+
+	if (!is_area_editable(box)) {
+		ZN_PRINT_VERBOSE("Area not editable");
+		return;
+	}
+
+	VoxelData &data = _terrain->get_storage();
+
+	data.pre_generate_box(box);
+
+	const unsigned int channel_index = VoxelBufferInternal::CHANNEL_SDF;
+
+	VoxelBufferInternal buffer;
+	buffer.create(box.size);
+	data.copy(box.pos, buffer, 1 << channel_index);
+
+	buffer.decompress_channel(channel_index);
+
+	// Convert input SDF
+	static thread_local std::vector<float> tls_in_sdf_full;
+	tls_in_sdf_full.resize(Vector3iUtil::get_volume(buffer.get_size()));
+	Span<float> in_sdf_full = to_span(tls_in_sdf_full);
+	get_unscaled_sdf(buffer, in_sdf_full);
+
+	static thread_local std::vector<float> tls_in_x;
+	static thread_local std::vector<float> tls_in_y;
+	static thread_local std::vector<float> tls_in_z;
+	const unsigned int deck_area = box.size.x * box.size.y;
+	tls_in_x.resize(deck_area);
+	tls_in_y.resize(deck_area);
+	tls_in_z.resize(deck_area);
+	Span<float> in_x = to_span(tls_in_x);
+	Span<float> in_y = to_span(tls_in_y);
+	Span<float> in_z = to_span(tls_in_z);
+
+	const Transform3D inv_transform = transform.affine_inverse();
+
+	const int output_sdf_buffer_index = graph->get_sdf_output_port_address();
+	ZN_ASSERT_RETURN_MSG(output_sdf_buffer_index != -1, "The graph has no SDF output, cannot use it as a brush");
+
+	// The graph works at a fixed dimension, so if we scale the operation with the Transform3D then we have to also
+	// scale the distance field the graph is working at
+	const float graph_scale = transform.basis.get_scale().length();
+	const float inv_graph_scale = 1.f / graph_scale;
+
+	for (unsigned int i = 0; i < in_sdf_full.size(); ++i) {
+		in_sdf_full[i] *= inv_graph_scale;
+	}
+
+	const float op_strength = get_sdf_strength();
+
+	{
+		ZN_PROFILE_SCOPE_NAMED("Slices");
+		// For each deck of the box (doing this to reduce memory usage since the graph will allocate temporary buffers
+		// for each operation, which can be a lot depending on the complexity of the graph)
+		Vector3i pos;
+		const Vector3i endpos = box.pos + box.size;
+		for (pos.z = box.pos.z; pos.z < endpos.z; ++pos.z) {
+			// Set positions
+			for (unsigned int i = 0; i < deck_area; ++i) {
+				in_z[i] = pos.z;
+			}
+			{
+				unsigned int i = 0;
+				for (pos.x = box.pos.x; pos.x < endpos.x; ++pos.x) {
+					for (pos.y = box.pos.y; pos.y < endpos.y; ++pos.y) {
+						in_x[i] = pos.x;
+						in_y[i] = pos.y;
+						++i;
+					}
+				}
+			}
+
+			// Transform positions to be local to the graph
+			for (unsigned int i = 0; i < deck_area; ++i) {
+				Vector3 graph_local_pos(in_x[i], in_y[i], in_z[i]);
+				graph_local_pos = inv_transform.xform(pos);
+				in_x[i] = graph_local_pos.x;
+				in_y[i] = graph_local_pos.y;
+				in_z[i] = graph_local_pos.z;
+			}
+
+			// Get SDF input
+			Span<float> in_sdf = in_sdf_full.sub(deck_area * (pos.z - box.pos.z), deck_area);
+
+			// Run graph
+			graph->generate_series(in_x, in_y, in_z, in_sdf);
+
+			// Read result
+			const VoxelGraphRuntime::State &state = VoxelGeneratorGraph::get_last_state_from_current_thread();
+			const VoxelGraphRuntime::Buffer &graph_buffer = state.get_buffer(output_sdf_buffer_index);
+
+			// Apply strength and graph scale. Input serves as output too, shouldn't overlap
+			for (unsigned int i = 0; i < in_sdf.size(); ++i) {
+				in_sdf[i] = Math::lerp(in_sdf[i], graph_buffer.data[i] * graph_scale, op_strength);
+			}
+		}
+	}
+
+	scale_and_store_sdf(buffer, in_sdf_full);
+
+	data.paste(box.pos, buffer, 1 << channel_index, false, 0, false);
+
+	_post_edit(box);
 }
 
 void VoxelToolLodTerrain::_bind_methods() {
@@ -809,6 +892,9 @@ void VoxelToolLodTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("do_sphere_async", "center", "radius"), &VoxelToolLodTerrain::do_sphere_async);
 	ClassDB::bind_method(
 			D_METHOD("stamp_sdf", "mesh_sdf", "transform", "isolevel", "sdf_scale"), &VoxelToolLodTerrain::stamp_sdf);
+	ClassDB::bind_method(D_METHOD("do_graph", "graph", "transform", "area_size"), &VoxelToolLodTerrain::do_graph);
+	ClassDB::bind_method(D_METHOD("do_hemisphere", "center", "radius", "flat_direction", "smoothness"),
+			&VoxelToolLodTerrain::do_hemisphere, DEFVAL(0.0));
 }
 
 } // namespace zylann::voxel

@@ -2,12 +2,12 @@
 #define VOXEL_MODIFIERS_H
 
 #include "../util/math/sdf.h"
+#include "../util/math/transform_3d.h"
 #include "../util/math/vector3.h"
 #include "../util/math/vector3f.h"
 #include "../util/thread/rw_lock.h"
 #include "voxel_buffer_internal.h"
 
-#include <core/math/transform_3d.h>
 #include <unordered_map>
 
 namespace zylann::voxel {
@@ -140,6 +140,11 @@ private:
 	float _isolevel;
 };
 
+// TODO Capsule
+// TODO Box
+// TODO Heightmap
+// TODO Graph (using generator graph as a brush?)
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 class VoxelModifierStack {
@@ -167,6 +172,8 @@ public:
 	VoxelModifier *get_modifier(uint32_t id) const;
 	void apply(VoxelBufferInternal &voxels, AABB aabb) const;
 	void apply(float &sdf, Vector3 position) const;
+	void apply(Span<const float> x_buffer, Span<const float> y_buffer, Span<const float> z_buffer,
+			Span<float> sdf_buffer, Vector3f min_pos, Vector3f max_pos) const;
 	void clear();
 
 private:

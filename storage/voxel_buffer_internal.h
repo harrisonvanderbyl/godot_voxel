@@ -94,7 +94,8 @@ public:
 		// Flat array, in order [z][x][y] because it allows faster vertical-wise access (the engine is Y-up).
 		uint8_t *data = nullptr;
 
-		// Default value when data is null
+		// Default value when data is null.
+		// This is an encoded value, so non-integer values may be obtained by converting it.
 		uint64_t defval = 0;
 
 		Depth depth = DEFAULT_CHANNEL_DEPTH;
@@ -123,6 +124,8 @@ public:
 	}
 
 	void set_default_values(FixedArray<uint64_t, VoxelBufferInternal::MAX_CHANNELS> values);
+
+	static uint64_t get_default_value_static(unsigned int channel_index);
 
 	uint64_t get_voxel(int x, int y, int z, unsigned int channel_index) const;
 	void set_voxel(uint64_t value, int x, int y, int z, unsigned int channel_index);
@@ -279,6 +282,7 @@ public:
 		Span<Data_T> data = Span<uint8_t>(channel.data, channel.size_in_bytes).reinterpret_cast_to<Data_T>();
 		// `&` is required because lambda captures are `const` by default and `mutable` can be used only from C++23
 		for_each_index_and_pos(box, [&data, action_func, offset](size_t i, Vector3i pos) {
+			// This does not require the action to use the exact type, conversion can occur here.
 			data.set(i, action_func(pos + offset, data[i]));
 		});
 		compress_if_uniform(channel);
@@ -503,6 +507,7 @@ private:
 	// TODO It may be preferable to actually move away from storing an RWLock in every buffer in the future.
 	// We should be able to find a solution because very few of these locks are actually used at a given time.
 	// It worked so far on PC but other platforms like the PS5 might have a pretty low limit (8K?)
+	// Also it's a heavy data structure, on Windows sizeof(RWLock) is 244.
 	RWLock _rw_lock;
 };
 
@@ -517,6 +522,9 @@ inline void debug_check_texture_indices_packed_u16(const VoxelBufferInternal &vo
 		}
 	}
 }
+
+void get_unscaled_sdf(const VoxelBufferInternal &voxels, Span<float> sdf);
+void scale_and_store_sdf(VoxelBufferInternal &voxels, Span<float> sdf);
 
 } // namespace zylann::voxel
 

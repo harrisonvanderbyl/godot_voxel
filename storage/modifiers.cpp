@@ -31,6 +31,21 @@ Span<const Vector3> get_positions_temporary(Vector3i buffer_size, Vector3 origin
 	return positions;
 }
 
+Span<const Vector3> get_positions_temporary(
+		Span<const float> x_buffer, Span<const float> y_buffer, Span<const float> z_buffer) {
+	ZN_ASSERT(x_buffer.size() == z_buffer.size() && y_buffer.size() == z_buffer.size());
+
+	tls_positions.resize(x_buffer.size());
+	Span<Vector3> positions = to_span(tls_positions);
+
+	for (unsigned int i = 0; i < x_buffer.size(); ++i) {
+		positions[i] = Vector3(x_buffer[i], y_buffer[i], z_buffer[i]);
+	}
+
+	return positions;
+}
+
+// TODO Use VoxelBufferInternal helper function
 Span<float> decompress_sdf_to_temporary(VoxelBufferInternal &voxels) {
 	ZN_DSTACK();
 	const Vector3i bs = voxels.get_size();
@@ -83,51 +98,6 @@ Span<float> decompress_sdf_to_temporary(VoxelBufferInternal &voxels) {
 	}
 
 	return sdf;
-}
-
-void store_sdf(VoxelBufferInternal &voxels, Span<float> sdf) {
-	const VoxelBufferInternal::ChannelId channel = VoxelBufferInternal::CHANNEL_SDF;
-	const VoxelBufferInternal::Depth depth = voxels.get_channel_depth(channel);
-
-	const float scale = VoxelBufferInternal::get_sdf_quantization_scale(depth);
-	for (unsigned int i = 0; i < sdf.size(); ++i) {
-		sdf[i] *= scale;
-	}
-
-	switch (depth) {
-		case VoxelBufferInternal::DEPTH_8_BIT: {
-			Span<int8_t> raw;
-			ZN_ASSERT(voxels.get_channel_data(channel, raw));
-			for (unsigned int i = 0; i < sdf.size(); ++i) {
-				raw[i] = snorm_to_s8(sdf[i]);
-			}
-		} break;
-
-		case VoxelBufferInternal::DEPTH_16_BIT: {
-			Span<int16_t> raw;
-			ZN_ASSERT(voxels.get_channel_data(channel, raw));
-			for (unsigned int i = 0; i < sdf.size(); ++i) {
-				raw[i] = snorm_to_s16(sdf[i]);
-			}
-		} break;
-
-		case VoxelBufferInternal::DEPTH_32_BIT: {
-			Span<float> raw;
-			ZN_ASSERT(voxels.get_channel_data(channel, raw));
-			memcpy(raw.data(), sdf.data(), sizeof(float) * sdf.size());
-		} break;
-
-		case VoxelBufferInternal::DEPTH_64_BIT: {
-			Span<double> raw;
-			ZN_ASSERT(voxels.get_channel_data(channel, raw));
-			for (unsigned int i = 0; i < sdf.size(); ++i) {
-				raw[i] = sdf[i];
-			}
-		} break;
-
-		default:
-			ZN_CRASH();
-	}
 }
 
 } //namespace
@@ -217,7 +187,7 @@ void VoxelModifierStack::apply(VoxelBufferInternal &voxels, AABB aabb) const {
 	}
 
 	if (any_intersection) {
-		store_sdf(voxels, ctx.sdf);
+		scale_and_store_sdf(voxels, ctx.sdf);
 		voxels.compress_uniform_channels();
 	}
 }
@@ -235,6 +205,31 @@ void VoxelModifierStack::apply(float &sdf, Vector3 position) const {
 	ctx.sdf = Span<float>(&sdf, 1);
 
 	const AABB aabb(position, Vector3(1, 1, 1));
+
+	for (unsigned int i = 0; i < _stack.size(); ++i) {
+		const VoxelModifier *modifier = _stack[i];
+		ZN_ASSERT(modifier != nullptr);
+
+		if (modifier->get_aabb().intersects(aabb)) {
+			modifier->apply(ctx);
+		}
+	}
+}
+
+void VoxelModifierStack::apply(Span<const float> x_buffer, Span<const float> y_buffer, Span<const float> z_buffer,
+		Span<float> sdf_buffer, Vector3f min_pos, Vector3f max_pos) const {
+	ZN_PROFILE_SCOPE();
+	RWLockRead lock(_stack_lock);
+
+	if (_stack.size() == 0) {
+		return;
+	}
+
+	VoxelModifierContext ctx;
+	ctx.positions = get_positions_temporary(x_buffer, y_buffer, z_buffer);
+	ctx.sdf = sdf_buffer;
+
+	const AABB aabb(to_vec3(min_pos), to_vec3(max_pos - min_pos));
 
 	for (unsigned int i = 0; i < _stack.size(); ++i) {
 		const VoxelModifier *modifier = _stack[i];

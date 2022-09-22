@@ -1,13 +1,12 @@
 #ifndef VOXEL_GRAPH_RUNTIME_H
 #define VOXEL_GRAPH_RUNTIME_H
 
+#include "../../util/godot/ref_counted.h"
 #include "../../util/math/interval.h"
 #include "../../util/math/vector3f.h"
 #include "../../util/math/vector3i.h"
 #include "../../util/span.h"
 #include "program_graph.h"
-
-#include <core/object/ref_counted.h>
 
 namespace zylann::voxel {
 
@@ -23,6 +22,7 @@ public:
 	struct CompilationResult {
 		bool success = false;
 		int node_id = -1;
+		int expanded_nodes_count = 0; // For testing and debugging
 		String message;
 
 		static CompilationResult make_error(const char *p_message, int p_node_id = -1) {
@@ -59,17 +59,17 @@ public:
 	// If no local optimization is done, this can remain the same for any position lists.
 	// If local optimization is used, it may be recomputed before each query.
 	struct ExecutionMap {
-		// TODO Typo?
-		std::vector<uint16_t> operation_adresses;
+		std::vector<uint16_t> operation_addresses;
 		// Stores node IDs referring to the user-facing graph.
 		// Each index corresponds to operation indices.
 		// The same node can appear twice, because sometimes a user-facing node compiles as multiple nodes.
+		// It can also include some nodes not explicitely present in the user graph (like auto-inputs).
 		std::vector<uint32_t> debug_nodes;
 		// From which index in the adress list operations will start depending on Y
 		unsigned int xzy_start_index = 0;
 
 		void clear() {
-			operation_adresses.clear();
+			operation_addresses.clear();
 			debug_nodes.clear();
 			xzy_start_index = 0;
 		}
@@ -157,8 +157,10 @@ public:
 	// TODO Evaluate needs for double-precision in VoxelGraphRuntime
 	void generate_single(State &state, Vector3f position_f, const ExecutionMap *execution_map) const;
 
-	void generate_set(State &state, Span<float> in_x, Span<float> in_y, Span<float> in_z, bool skip_xz,
-			const ExecutionMap *execution_map) const;
+	void generate_set(State &state, Span<float> in_x, Span<float> in_y, Span<float> in_z, Span<float> in_sdf,
+			bool skip_xz, const ExecutionMap *execution_map) const;
+
+	bool has_input(unsigned int node_type) const;
 
 	inline unsigned int get_output_count() const {
 		return _program.outputs_count;
@@ -171,7 +173,7 @@ public:
 	// Analyzes a specific region of inputs to find out what ranges of outputs we can expect.
 	// It can be used to speed up calls to `generate_set` thanks to execution mapping,
 	// so that operations can be optimized out if they don't contribute to the result.
-	void analyze_range(State &state, Vector3i min_pos, Vector3i max_pos) const;
+	void analyze_range(State &state, Vector3i min_pos, Vector3i max_pos, math::Interval sdf_input_range) const;
 
 	// Call this after `analyze_range` if you intend to actually generate a set or single values in the area.
 	// This allows to use the execution map optimization, until you choose another area.
@@ -389,6 +391,8 @@ private:
 		int y_input_address = -1;
 		// Address within the State's array of buffers where the Z input may be.
 		int z_input_address = -1;
+		// Address within the State's array of buffers where the SDF input may be.
+		int sdf_input_address = -1;
 
 		FixedArray<OutputInfo, MAX_OUTPUTS> outputs;
 		unsigned int outputs_count = 0;
@@ -423,6 +427,7 @@ private:
 			x_input_address = -1;
 			y_input_address = -1;
 			z_input_address = -1;
+			sdf_input_address = -1;
 			outputs_count = 0;
 			compilation_result = CompilationResult();
 			for (auto it = heap_resources.begin(); it != heap_resources.end(); ++it) {

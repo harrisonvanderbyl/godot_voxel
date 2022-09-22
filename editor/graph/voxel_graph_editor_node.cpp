@@ -1,11 +1,13 @@
 #include "voxel_graph_editor_node.h"
 #include "../../generators/graph/voxel_graph_node_db.h"
+#include "../../util/godot/array.h"
+#include "../../util/godot/callable.h"
+#include "../../util/godot/editor_scale.h"
 #include "../../util/godot/funcs.h"
+#include "../../util/godot/h_box_container.h"
+#include "../../util/godot/label.h"
+#include "../../util/godot/node.h"
 #include "voxel_graph_editor_node_preview.h"
-
-#include <editor/editor_scale.h>
-#include <scene/gui/box_container.h>
-#include <scene/gui/label.h>
 
 namespace zylann::voxel {
 
@@ -33,7 +35,7 @@ VoxelGraphEditorNode *VoxelGraphEditorNode::create(const VoxelGeneratorGraph &gr
 	}
 
 	if (node_view->is_resizable()) {
-		node_view->connect("resize_request", callable_mp(node_view, &VoxelGraphEditorNode::_on_resize_request));
+		node_view->connect("resize_request", ZN_GODOT_CALLABLE_MP(node_view, VoxelGraphEditorNode, _on_resize_request));
 	}
 
 	return node_view;
@@ -88,7 +90,7 @@ void VoxelGraphEditorNode::update_layout(const VoxelGeneratorGraph &graph) {
 	// Clear previous inputs and outputs
 	for (Node *row : _rows) {
 		remove_child(row);
-		row->queue_delete();
+		queue_free_node(row);
 	}
 	_rows.clear();
 
@@ -179,7 +181,35 @@ void VoxelGraphEditorNode::poll_default_inputs(const VoxelGeneratorGraph &graph)
 			}
 
 		} else {
-			// There is no inbound connection, show the default value
+			if (graph.get_node_default_inputs_autoconnect(loc.node_id)) {
+				const VoxelGeneratorGraph::NodeTypeID node_type_id = graph.get_node_type_id(loc.node_id);
+				const VoxelGraphNodeDB::NodeType &node_type = VoxelGraphNodeDB::get_singleton().get_type(node_type_id);
+				const VoxelGraphNodeDB::Port &input_port = node_type.inputs[input_index];
+				if (input_port.auto_connect != VoxelGraphNodeDB::AUTO_CONNECT_NONE) {
+					Variant value;
+					switch (input_port.auto_connect) {
+						case VoxelGraphNodeDB::AUTO_CONNECT_X:
+							value = "Auto X";
+							break;
+						case VoxelGraphNodeDB::AUTO_CONNECT_Y:
+							value = "Auto Y";
+							break;
+						case VoxelGraphNodeDB::AUTO_CONNECT_Z:
+							value = "Auto Z";
+							break;
+						default:
+							ERR_PRINT("Unhandled autoconnect");
+							value = int(input_port.auto_connect);
+							break;
+					}
+					if (input_hint.last_value != value) {
+						input_hint.label->set_text(prefix + value.stringify());
+						input_hint.last_value = value;
+					}
+					continue;
+				}
+			}
+			// There is no inbound connection nor autoconnect, show the default value
 			const Variant current_value = graph.get_node_default_input(loc.node_id, loc.port_index);
 			// Only update when it changes so we don't spam editor redraws
 			if (input_hint.last_value != current_value) {
@@ -209,14 +239,14 @@ void VoxelGraphEditorNode::update_range_analysis_tooltips(
 		}
 		const math::Interval range = state.get_range(address);
 		Control *label = _output_labels[port_index];
-		label->set_tooltip(String("Min: {0}\nMax: {1}").format(varray(range.min, range.max)));
+		label->set_tooltip_text(String("Min: {0}\nMax: {1}").format(varray(range.min, range.max)));
 	}
 }
 
 void VoxelGraphEditorNode::clear_range_analysis_tooltips() {
 	for (unsigned int i = 0; i < _output_labels.size(); ++i) {
 		Control *oc = _output_labels[i];
-		oc->set_tooltip("");
+		oc->set_tooltip_text("");
 	}
 }
 
@@ -225,7 +255,7 @@ void VoxelGraphEditorNode::set_profiling_ratio_visible(bool visible) {
 		return;
 	}
 	_profiling_ratio_enabled = visible;
-	update();
+	queue_redraw();
 }
 
 void VoxelGraphEditorNode::set_profiling_ratio(float ratio) {
@@ -233,7 +263,7 @@ void VoxelGraphEditorNode::set_profiling_ratio(float ratio) {
 		return;
 	}
 	_profiling_ratio = ratio;
-	update();
+	queue_redraw();
 }
 
 // Color has no lerp??
@@ -257,6 +287,12 @@ void VoxelGraphEditorNode::_notification(int p_what) {
 			draw_rect(Rect2(0, control_size.y - bgh, bgw * _profiling_ratio, bgh), fg_color);
 		}
 	}
+}
+
+void VoxelGraphEditorNode::_bind_methods() {
+#ifdef ZN_GODOT_EXTENSION
+	ClassDB::bind_method(D_METHOD("_on_resize_request", "new_size"), &VoxelGraphEditorNode::_on_resize_request);
+#endif
 }
 
 } // namespace zylann::voxel

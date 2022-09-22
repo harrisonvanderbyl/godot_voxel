@@ -3,11 +3,11 @@
 
 #include "../../storage/voxel_buffer_internal.h"
 #include "../../util/fixed_array.h"
+#include "../../util/math/color.h"
 #include "../../util/math/vector2f.h"
 #include "../../util/math/vector3f.h"
 #include "../../util/math/vector3i.h"
 
-#include <core/math/color.h>
 #include <vector>
 
 namespace zylann::voxel::transvoxel {
@@ -20,6 +20,8 @@ static const int MAX_PADDING = 2;
 static const unsigned int MAX_TEXTURES = 16;
 // How many textures can blend at once
 static const unsigned int MAX_TEXTURE_BLENDS = 4;
+// Transvoxel guarantees a maximum number of triangle generated for each 2x2x2 cell of voxels.
+static const unsigned int MAX_TRIANGLES_PER_CELL = 5;
 
 enum TexturingMode {
 	TEXTURES_NONE,
@@ -64,7 +66,7 @@ struct MeshArrays {
 	std::vector<Vector3f> normals;
 	std::vector<LodAttrib> lod_data;
 	std::vector<Vector2f> texturing_data; // TextureAttrib
-	std::vector<int> indices;
+	std::vector<int32_t> indices;
 
 	void clear() {
 		vertices.clear();
@@ -150,9 +152,14 @@ public:
 	virtual float get_single(const Vector3i position_in_voxels, uint32_t lod_index) const = 0;
 };
 
+struct CellInfo {
+	Vector3i position;
+	uint32_t triangle_count;
+};
+
 DefaultTextureIndicesData build_regular_mesh(const VoxelBufferInternal &voxels, unsigned int sdf_channel,
 		uint32_t lod_index, TexturingMode texturing_mode, Cache &cache, MeshArrays &output,
-		const IDeepSDFSampler *deep_sdf_sampler);
+		const IDeepSDFSampler *deep_sdf_sampler, std::vector<CellInfo> *cell_infos);
 
 void build_transition_mesh(const VoxelBufferInternal &voxels, unsigned int sdf_channel, int direction,
 		uint32_t lod_index, TexturingMode texturing_mode, Cache &cache, MeshArrays &output,
